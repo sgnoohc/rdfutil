@@ -18,18 +18,17 @@ int main(int argc, char** argv)
 
     // Create branches based on selected objects
     RNode collection_building = object_selections;
-    collection_building = TrimCollection(collection_building , "Muon"     , "Muon_AnaLooseID"     , "GoodMuon"     , Muon_properties);
-    collection_building = TrimCollection(collection_building , "Electron" , "Electron_AnaLooseID" , "GoodElectron" , Electron_properties);
-    collection_building = TrimCollection(collection_building , "Jet"      , "Jet_AnaLooseID"      , "PreORGoodJet" , Jet_properties);
-    collection_building = MergeCollections(collection_building, "GoodMuon", "GoodElectron", "GoodLepton");
-    collection_building = TrimCollectionByDeltaR(collection_building, "PreORGoodJet", "GoodLepton", "GoodJet", Jet_properties, 0.4f);
+    collection_building = RdfUtil::TrimCollection(collection_building , "Muon"     , "Muon_AnaLooseID"     , "GoodMuon"     , Muon_properties);
+    collection_building = RdfUtil::TrimCollection(collection_building , "Electron" , "Electron_AnaLooseID" , "GoodElectron" , Electron_properties);
+    collection_building = RdfUtil::TrimCollection(collection_building , "Jet"      , "Jet_AnaLooseID"      , "PreORGoodJet" , Jet_properties);
+    collection_building = RdfUtil::MergeCollections(collection_building, "GoodMuon", "GoodElectron", "GoodLepton");
+    collection_building = RdfUtil::TrimCollectionByDeltaR(collection_building, "PreORGoodJet", "GoodLepton", "GoodJet", Jet_properties, 0.4f);
 
     // Print
     (*collection_building.Display({"GoodMuon_pt", "GoodElectron_pt", "GoodLepton_pt", "GoodLepton_pdgId", "nGoodJet", "nPreORGoodJet"}, 300)).Print();
 
     // Output
-    collection_building.Snapshot("Events", "out.root", {".*Good.*"});
-    TFile out("out.root", "RECREATE");
-    out.Close();
+    auto cols_to_write = RdfUtil::SelectColumnNames(collection_building, {"Good*"});
+    collection_building.Snapshot("Events", "out.root", cols_to_write);
 
 }
