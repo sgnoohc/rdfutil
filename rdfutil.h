@@ -951,8 +951,8 @@ namespace RdfUtil
 
     enum PairOptMode
     {
-        Min,
-        Max
+        MinimizeScore,
+        MaximizeScore
     };
 
     static bool ColumnExists(ROOT::RDF::RNode df, const std::string& name)
@@ -973,9 +973,7 @@ namespace RdfUtil
     {
         return [](const LV& a, const LV& b, int, int)
         {
-            LV ua(1.f, a.Eta(), a.Phi(), 0.f);
-            LV ub(1.f, b.Eta(), b.Phi(), 0.f);
-            return ROOT::Math::VectorUtil::DeltaR(ua, ub);
+            return (float) ROOT::Math::VectorUtil::DeltaR(a, b);
         };
     }
 
@@ -991,7 +989,7 @@ namespace RdfUtil
     {
         return [](const LV& a, const LV& b, int, int)
         {
-            return std::abs(ROOT::Math::VectorUtil::DeltaPhi(a.Phi(), b.Phi()));
+            return (float) std::abs(ROOT::Math::VectorUtil::DeltaPhi(a, b));
         };
     }
 
@@ -1018,9 +1016,7 @@ namespace RdfUtil
             if (a.Pt() < ptMin1) return RejectScore();
             if (b.Pt() < ptMin2) return RejectScore();
 
-            LV ua(1.f, a.Eta(), a.Phi(), 0.f);
-            LV ub(1.f, b.Eta(), b.Phi(), 0.f);
-            return ROOT::Math::VectorUtil::DeltaR(ua, ub);
+            return (float) ROOT::Math::VectorUtil::DeltaR(a, b);
         };
     }
 
@@ -1029,7 +1025,7 @@ namespace RdfUtil
                                            const std::string& p2,
                                            const std::string& out,
                                            PairSelectorLV selector,
-                                           PairOptMode mode = Min)
+                                           PairOptMode mode = MinimizeScore)
     {
         std::string p1pt  = p1 + "_pt";
         std::string p1eta = p1 + "_eta";
@@ -1043,16 +1039,27 @@ namespace RdfUtil
 
         if (!ColumnExists(df, p1m))
         {
-            std::string tmp = "__" + p1 + "_mass0";
-            df = df.Define(tmp, [](const RVec<float>& v){ return RVec<float>(v.size(), 0.f); }, {p1pt});
-            p1m = tmp;
+            std::string tmp1 = "__" + p1 + "_mass0";
+            df = df.Define(tmp1, [](const RVec<float>& v){ return RVec<float>(v.size(), 0.f); }, {p1pt});
+            p1m = tmp1;
         }
 
         if (!ColumnExists(df, p2m))
         {
-            std::string tmp = "__" + p2 + "_mass0";
-            df = df.Define(tmp, [](const RVec<float>& v){ return RVec<float>(v.size(), 0.f); }, {p2pt});
-            p2m = tmp;
+            if (p2 == p1)
+            {
+                // same collection: reuse p1m (already real mass or temp mass0)
+                p2m = p1m;
+            }
+            else
+            {
+                std::string tmp2 = "__" + p2 + "_mass0";
+                if (!ColumnExists(df, tmp2))
+                    df = df.Define(tmp2,
+                                   [](const RVec<float>& v){ return RVec<float>(v.size(), 0.f); },
+                                   {p2pt});
+                p2m = tmp2;
+            }
         }
 
         std::string carrier = "__" + out + "_pairCarrier";
@@ -1116,7 +1123,7 @@ namespace RdfUtil
                         best.mass  = (a + b).M();
 
                         best.dr   = ROOT::Math::VectorUtil::DeltaR(a, b);
-                        best.dphi = ROOT::Math::VectorUtil::DeltaPhi(a.Phi(), b.Phi());
+                        best.dphi = ROOT::Math::VectorUtil::DeltaPhi(a, b);
                         best.deta = a.Eta() - b.Eta();
                     }
                 }
@@ -1126,8 +1133,21 @@ namespace RdfUtil
             {p1pt,p1eta,p1phi,p1m,p2pt,p2eta,p2phi,p2m}
         );
 
-        df = df.Define(out + "_idx1",  [](const PairCarrier& c){ return c.idx1;  }, {carrier});
-        df = df.Define(out + "_idx2",  [](const PairCarrier& c){ return c.idx2;  }, {carrier});
+        // Lower case first letter prefix for out collection idx prefix
+        std::string p1low = p1;
+        if (!p1low.empty())
+        {
+            p1low[0] = std::tolower(p1low[0]);
+        }
+
+        std::string p2low = p2;
+        if (!p2low.empty())
+        {
+            p2low[0] = std::tolower(p2low[0]);
+        }
+
+        df = df.Define(out + "_" + p1low + "Idx1",  [](const PairCarrier& c){ return c.idx1;  }, {carrier});
+        df = df.Define(out + "_" + p2low + "Idx2",  [](const PairCarrier& c){ return c.idx2;  }, {carrier});
         df = df.Define(out + "_score", [](const PairCarrier& c){ return c.score; }, {carrier});
 
         df = df.Define(out + "_mass",  [](const PairCarrier& c){ return c.mass; }, {carrier});
