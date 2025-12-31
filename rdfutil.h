@@ -186,6 +186,92 @@ inline std::vector<std::string> gen_mask_inputs =
     "GenPart_statusFlags",
     "GenPart_genPartIdxMother"
 };
+
+inline auto lep_origin_mask = [](const ROOT::VecOps::RVec<int>& pdgId,
+                                 const ROOT::VecOps::RVec<int>& genPartIdxMother) -> ROOT::VecOps::RVec<int>
+{
+    using ROOT::VecOps::RVec;
+    const int n = (int)pdgId.size();
+    RVec<int> code(n, -1);
+
+    auto absId = [](int x){ return x < 0 ? -x : x; };
+
+    // Minimal hadron-id helpers (PDG numbering conventions)
+    auto isHadron = [&](int id)->bool { return absId(id) > 100; };
+
+    auto hasDigit = [&](int id, int digit)->bool {
+        id = absId(id);
+        // PDG hadron codes carry quark content in decimal digits (works well for B/C tagging)
+        // E.g. B mesons ~ 5xx, 5xxx; charm ~ 4xx, 4xxx; baryons similar.
+        while (id > 0) { if (id % 10 == digit) return true; id /= 10; }
+        return false;
+    };
+
+    auto isBeauty = [&](int id)->bool {
+        const int a = absId(id);
+        if (a == 5) return true;              // b quark
+        if (!isHadron(a)) return false;
+        return hasDigit(a, 5);                // any hadron containing b
+    };
+
+    auto isCharm = [&](int id)->bool {
+        const int a = absId(id);
+        if (a == 4) return true;              // c quark
+        if (!isHadron(a)) return false;
+        return hasDigit(a, 4);                // any hadron containing c
+    };
+
+    auto isLight = [&](int id)->bool {
+        const int a = absId(id);
+        // light quarks
+        if (a >= 1 && a <= 3) return true;    // u,d,s
+        // light hadrons (exclude b/c by construction)
+        if (!isHadron(a)) return false;
+        if (hasDigit(a, 4) || hasDigit(a, 5)) return false;
+        return true;
+    };
+
+    for (int i = 0; i < n; ++i)
+    {
+        const int a = absId(pdgId[i]);
+        if (!(a == 11 || a == 13)) continue; // classify only e/mu
+
+        bool seenTau = false;
+        int cur = i;
+
+        // Walk up mother chain
+        for (int steps = 0; steps < 100; ++steps)
+        {
+            const int mom = genPartIdxMother[cur];
+            if (mom < 0 || mom >= n) break;
+
+            const int mid = absId(pdgId[mom]);
+
+            // tau encountered
+            if (mid == 15) { seenTau = true; cur = mom; continue; }
+
+            // W/Z encountered (tau flag decides which category)
+            if (mid == 23) { code[i] = seenTau ? 2 : 0; break; }
+            if (mid == 24) { code[i] = seenTau ? 3 : 1; break; }
+
+            // Heavy/light flavor encountered (only if we haven't already labeled W/Z)
+            if (isBeauty(pdgId[mom])) { code[i] = 5; break; }
+            if (isCharm(pdgId[mom]))  { code[i] = 4; cur = mom; continue; }
+            if (isLight(pdgId[mom]))  { code[i] = 6; break; }
+
+            cur = mom;
+        }
+    }
+
+    return code;
+};
+
+inline std::vector<std::string> lep_origin_mask_inputs =
+{
+    "GenPart_pdgId",
+    "GenPart_genPartIdxMother"
+};
+
 // ==============================================================================
 
 
@@ -247,6 +333,7 @@ inline std::vector<std::string> GenPart_properties =
     "status",
     "statusFlags",
     "genPartIdxMother",
+    "lepOrigin",
 };
 // ==============================================================================
 
@@ -702,88 +789,80 @@ namespace RdfUtil
 
 
     // ============================================================================
-    // MatchCollection: attach gen-match results to an existing lepton collection
+    // MatchCollection: attach dr-match results to an existing collection
     //
     // Behavior
-    //   - For each lepton, match to the closest gen *lepton* (|pdgId| in {11,13,15})
-    //     within ΔR < dRMax.
+    //   - For each object, match to the closest target within dR < dRMax.
     //   - Always defines these three branches:
-    //       lepPrefix_goodGenPartIdx
-    //       lepPrefix_goodGenPartDr
-    //       lepPrefix_goodGenPartPdgId
+    //       objPrefix_tarPrefixIdx
+    //       objPrefix_tarPrefixDr
     //
     // Inputs required
-    //   lepPrefix_eta, lepPrefix_phi
-    //   genPrefix_eta, genPrefix_phi, genPrefix_pdgId
+    //   objPrefix_eta, objPrefix_phi
+    //   tarPrefix_eta, tarPrefix_phi
     //
     // Output indexing
-    //   idx points into the *trimmed* gen collection (e.g. GoodGenPart_*).
+    //   idx points into the target collection
     // ============================================================================
     static ROOT::RDF::RNode MatchCollection(ROOT::RDF::RNode df,
-                                            const std::string& lepPrefix,
-                                            const std::string& genPrefix,
+                                            const std::string& objPrefix,
+                                            const std::string& tarPrefix,
                                             const float dRMax)
     {
         using ROOT::VecOps::RVec;
 
         // Named carrier type (must be visible to ROOT's type introspection)
-        struct GenMatchCarrier
+        struct MatchCarrier
         {
-            ROOT::VecOps::RVec<int>   idx;   // index into genPrefix collection
+            ROOT::VecOps::RVec<int>   idx;   // index into tarPrefix collection
             ROOT::VecOps::RVec<float> dr;    // best ΔR (inf if none)
-            ROOT::VecOps::RVec<int>   pdgId; // matched gen pdgId (0 if none)
         };
 
-        const std::string lep_eta = lepPrefix + "_eta";
-        const std::string lep_phi = lepPrefix + "_phi";
+        std::string tarPrefixLowerFirst = tarPrefix;
+        if (!tarPrefixLowerFirst.empty())
+        {
+            tarPrefixLowerFirst[0] = std::tolower(tarPrefixLowerFirst[0]);
+        }
 
-        const std::string gen_eta = genPrefix + "_eta";
-        const std::string gen_phi = genPrefix + "_phi";
-        const std::string gen_pdg = genPrefix + "_pdgId";
+        const std::string obj_eta = objPrefix + "_eta";
+        const std::string obj_phi = objPrefix + "_phi";
 
-        const std::string carrier = "__" + lepPrefix + "_genMatchCarrier";
+        const std::string tar_eta = tarPrefix + "_eta";
+        const std::string tar_phi = tarPrefix + "_phi";
 
-        const std::string out_idx = lepPrefix + "_goodGenPartIdx";
-        const std::string out_dr  = lepPrefix + "_goodGenPartDr";
-        const std::string out_pdg = lepPrefix + "_goodGenPartPdgId";
+        const std::string carrier = "__" + objPrefix + "_" + tarPrefixLowerFirst + "MatchCarrier";
+
+        const std::string out_idx = objPrefix + "_" + tarPrefixLowerFirst + "Idx";
+        const std::string out_dr  = objPrefix + "_" + tarPrefixLowerFirst + "Dr";
 
         auto absId = [](int x) { return x < 0 ? -x : x; };
 
         // Build carrier (explicit types, explicit return type)
         df = df.Define(
             carrier,
-            [dRMax, absId](const RVec<float>& lEta,
-                          const RVec<float>& lPhi,
-                          const RVec<float>& gEta,
-                          const RVec<float>& gPhi,
-                          const RVec<int>&   gPdg) -> GenMatchCarrier
+            [dRMax, absId](const RVec<float>& oEta,
+                           const RVec<float>& oPhi,
+                           const RVec<float>& tEta,
+                           const RVec<float>& tPhi) -> MatchCarrier
             {
-                const size_t nl = lEta.size();
-                const size_t ng = gEta.size();
+                const size_t no = oEta.size();
+                const size_t nt = tEta.size();
 
-                GenMatchCarrier out;
-                out.idx.assign(nl, -1);
-                out.dr.assign(nl, std::numeric_limits<float>::infinity());
-                out.pdgId.assign(nl, 0);
+                MatchCarrier out;
+                out.idx.assign(no, -1);
+                out.dr.assign(no, std::numeric_limits<float>::infinity());
 
-                auto isGenLepton = [&](int pdgId) {
-                    const int a = absId(pdgId);
-                    return (a == 11) || (a == 13) || (a == 15);
-                };
-
-                for (size_t i = 0; i < nl; ++i)
+                for (size_t i = 0; i < no; ++i)
                 {
                     float best = dRMax;
                     int bestIdx = -1;
 
-                    LV p4l(1.0, lEta[i], lPhi[i], 0.0);
+                    LV p4o(1.0, oEta[i], oPhi[i], 0.0);
 
-                    for (size_t j = 0; j < ng; ++j)
+                    for (size_t j = 0; j < nt; ++j)
                     {
-                        if (!isGenLepton(gPdg[j])) continue;
-
-                        LV p4g(1.0, gEta[j], gPhi[j], 0.0);
-                        const float dr = ROOT::Math::VectorUtil::DeltaR(p4l, p4g);
+                        LV p4t(1.0, tEta[j], tPhi[j], 0.0);
+                        const float dr = ROOT::Math::VectorUtil::DeltaR(p4o, p4t);
 
                         if (dr < best)
                         {
@@ -796,19 +875,17 @@ namespace RdfUtil
                     {
                         out.idx[i]  = bestIdx;
                         out.dr[i]   = best;
-                        out.pdgId[i]= gPdg[bestIdx];
                     }
                 }
 
                 return out;
             },
-            {lep_eta, lep_phi, gen_eta, gen_phi, gen_pdg}
+            {obj_eta, obj_phi, tar_eta, tar_phi}
         );
 
         // Unpack carrier (explicit lambdas; no generic lambdas)
-        df = df.Define(out_idx, [](const GenMatchCarrier& c) -> RVec<int> { return c.idx; }, {carrier});
-        df = df.Define(out_dr, [](const GenMatchCarrier& c) -> RVec<float> { return c.dr; }, {carrier});
-        df = df.Define(out_pdg, [](const GenMatchCarrier& c) -> RVec<int> { return c.pdgId; }, {carrier});
+        df = df.Define(out_idx, [](const MatchCarrier& c) -> RVec<int> { return c.idx; }, {carrier});
+        df = df.Define(out_dr, [](const MatchCarrier& c) -> RVec<float> { return c.dr; }, {carrier});
 
         return df;
     }
