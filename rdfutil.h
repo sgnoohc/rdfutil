@@ -1158,6 +1158,333 @@ namespace RdfUtil
         return df;
     }
 
+
+
+
+
+
+
+    // ============================================================================
+    // TrioCollection helper for ROOT RDataFrame
+    //
+    // Purpose
+    //   Build the best object trio between three NanoAOD style collections according
+    //   to a user provided selector function.
+    //
+    // Summary
+    //   For each event all triples (i,j,k) are scanned between collections c1, c2
+    //   and c3. The selector receives three LV four vectors and their indices and
+    //   returns a single float score. The best trio is chosen by minimizing or
+    //   maximizing that score.
+    //
+    // Selector convention
+    //   selector(const LV& obj1, const LV& obj2, const LV& obj3,
+    //            int idx1, int idx2, int idx3) -> float
+    //
+    //   The selector returns a finite score value for a valid trio. If the selector
+    //   returns NaN the trio is rejected.
+    //
+    // Missing mass handling
+    //   If c1_mass, c2_mass or c3_mass does not exist in the dataframe, a zero mass
+    //   column is created internally and used for four vector construction.
+    //
+    // Trio rules
+    //   - If c1, c2 and c3 are different collections, all (i,j,k) triples are considered.
+    //   - If any two of c1, c2 and c3 are the same collection, triples with repeated
+    //     indices for that collection are skipped.
+    //   - Uniqueness constraints such as i < j < k can be enforced in the selector.
+    //
+    // Output branches
+    //   out_c1Idx1   index of first object in c1
+    //   out_c2Idx2   index of second object in c2
+    //   out_c3Idx3   index of third object in c3
+    //   out_score    selected score value
+    //   out_mass     invariant mass of the selected trio
+    //   out_sumPt    sum of transverse momenta of the trio
+    //   out_dr12     delta r between object 1 and object 2
+    //   out_dr13     delta r between object 1 and object 3
+    //   out_dr23     delta r between object 2 and object 3
+    //   out_minDr    minimum pairwise delta r within the trio
+    //   out_maxDr    maximum pairwise delta r within the trio
+    //
+    // Typical use cases
+    //   - Three jet resonance reconstruction using maximum invariant mass
+    //   - Tight three object cluster selection using minimum delta r
+    //   - Multi lepton candidate building using mass window matching
+    //
+    // ============================================================================
+
+
+    struct TrioCarrier
+    {
+        int idx1;
+        int idx2;
+        int idx3;
+
+        float score;
+
+        float mass;
+        float sumPt;
+
+        float dr12;
+        float dr13;
+        float dr23;
+
+        float minDr;
+        float maxDr;
+    };
+
+    using TrioSelectorLV = std::function<float(const LV&, const LV&, const LV&, int, int, int)>;
+
+    static TrioSelectorLV selTrioMass()
+    {
+        return [](const LV& a, const LV& b, const LV& c, int, int, int) -> float
+        {
+            return (float)(a + b + c).M();
+        };
+    }
+
+    static TrioSelectorLV selTrioAbsMassDiff(float target)
+    {
+        return [target](const LV& a, const LV& b, const LV& c, int, int, int) -> float
+        {
+            return (float)std::abs((a + b + c).M() - (double)target);
+        };
+    }
+
+    static TrioSelectorLV selTrioMinDr()
+    {
+        return [](const LV& a, const LV& b, const LV& c, int, int, int) -> float
+        {
+            const double dr12 = ROOT::Math::VectorUtil::DeltaR(a, b);
+            const double dr13 = ROOT::Math::VectorUtil::DeltaR(a, c);
+            const double dr23 = ROOT::Math::VectorUtil::DeltaR(b, c);
+            return (float)std::min(dr12, std::min(dr13, dr23));
+        };
+    }
+
+    static TrioSelectorLV selTrioMaxDr()
+    {
+        return [](const LV& a, const LV& b, const LV& c, int, int, int) -> float
+        {
+            const double dr12 = ROOT::Math::VectorUtil::DeltaR(a, b);
+            const double dr13 = ROOT::Math::VectorUtil::DeltaR(a, c);
+            const double dr23 = ROOT::Math::VectorUtil::DeltaR(b, c);
+            return (float)std::max(dr12, std::max(dr13, dr23));
+        };
+    }
+
+    static TrioSelectorLV selTrioSumPt()
+    {
+        return [](const LV& a, const LV& b, const LV& c, int, int, int) -> float
+        {
+            return (float)(a.Pt() + b.Pt() + c.Pt());
+        };
+    }
+
+    static TrioSelectorLV selTrioMassWithPtMin(float ptMin1, float ptMin2, float ptMin3)
+    {
+        return [ptMin1,ptMin2,ptMin3](const LV& a, const LV& b, const LV& c, int, int, int) -> float
+        {
+            if (a.Pt() < ptMin1) return RejectScore();
+            if (b.Pt() < ptMin2) return RejectScore();
+            if (c.Pt() < ptMin3) return RejectScore();
+            return (float)(a + b + c).M();
+        };
+    }
+
+
+    static std::string LowerFirst(const std::string& s)
+    {
+        if (s.empty()) return s;
+        std::string r = s;
+        r[0] = (char)std::tolower((unsigned char)r[0]);
+        return r;
+    }
+
+    static ROOT::RDF::RNode TrioCollection(ROOT::RDF::RNode df,
+                                           const std::string& c1,
+                                           const std::string& c2,
+                                           const std::string& c3,
+                                           const std::string& out,
+                                           TrioSelectorLV selector,
+                                           PairOptMode mode = MinimizeScore)
+    {
+        std::string c1pt  = c1 + "_pt";
+        std::string c1eta = c1 + "_eta";
+        std::string c1phi = c1 + "_phi";
+        std::string c1m   = c1 + "_mass";
+
+        std::string c2pt  = c2 + "_pt";
+        std::string c2eta = c2 + "_eta";
+        std::string c2phi = c2 + "_phi";
+        std::string c2m   = c2 + "_mass";
+
+        std::string c3pt  = c3 + "_pt";
+        std::string c3eta = c3 + "_eta";
+        std::string c3phi = c3 + "_phi";
+        std::string c3m   = c3 + "_mass";
+
+        // Missing mass handling with safe reuse when collection names collide
+        if (!ColumnExists(df, c1m))
+        {
+            std::string tmp = "__" + c1 + "_mass0";
+            if (!ColumnExists(df, tmp))
+                df = df.Define(tmp, [](const RVec<float>& v){ return RVec<float>(v.size(), 0.f); }, {c1pt});
+            c1m = tmp;
+        }
+
+        if (!ColumnExists(df, c2m))
+        {
+            if (c2 == c1) c2m = c1m;
+            else
+            {
+                std::string tmp = "__" + c2 + "_mass0";
+                if (!ColumnExists(df, tmp))
+                    df = df.Define(tmp, [](const RVec<float>& v){ return RVec<float>(v.size(), 0.f); }, {c2pt});
+                c2m = tmp;
+            }
+        }
+
+        if (!ColumnExists(df, c3m))
+        {
+            if (c3 == c1) c3m = c1m;
+            else if (c3 == c2) c3m = c2m;
+            else
+            {
+                std::string tmp = "__" + c3 + "_mass0";
+                if (!ColumnExists(df, tmp))
+                    df = df.Define(tmp, [](const RVec<float>& v){ return RVec<float>(v.size(), 0.f); }, {c3pt});
+                c3m = tmp;
+            }
+        }
+
+        std::string carrier = "__" + out + "_trioCarrier";
+
+        df = df.Define(
+            carrier,
+            [selector,mode,c1,c2,c3](const RVec<float>& pt1,
+                                     const RVec<float>& eta1,
+                                     const RVec<float>& phi1,
+                                     const RVec<float>& m1,
+                                     const RVec<float>& pt2,
+                                     const RVec<float>& eta2,
+                                     const RVec<float>& phi2,
+                                     const RVec<float>& m2,
+                                     const RVec<float>& pt3,
+                                     const RVec<float>& eta3,
+                                     const RVec<float>& phi3,
+                                     const RVec<float>& m3)
+            {
+                TrioCarrier best;
+                best.idx1 = -1;
+                best.idx2 = -1;
+                best.idx3 = -1;
+
+                float bestScore = (mode == MinimizeScore)
+                    ? std::numeric_limits<float>::infinity()
+                    : -std::numeric_limits<float>::infinity();
+
+                best.score = bestScore;
+
+                best.mass = 0.f;
+                best.sumPt = 0.f;
+
+                best.dr12 = std::numeric_limits<float>::infinity();
+                best.dr13 = std::numeric_limits<float>::infinity();
+                best.dr23 = std::numeric_limits<float>::infinity();
+
+                best.minDr = std::numeric_limits<float>::infinity();
+                best.maxDr = 0.f;
+
+                const bool same12 = (c1 == c2);
+                const bool same13 = (c1 == c3);
+                const bool same23 = (c2 == c3);
+
+                const size_t n1 = pt1.size();
+                const size_t n2 = pt2.size();
+                const size_t n3 = pt3.size();
+                if (n1 == 0 || n2 == 0 || n3 == 0) return best;
+
+                for (size_t i = 0; i < n1; ++i)
+                {
+                    for (size_t j = 0; j < n2; ++j)
+                    {
+                        for (size_t k = 0; k < n3; ++k)
+                        {
+                            if (same12 && i == j) continue;
+                            if (same13 && i == k) continue;
+                            if (same23 && j == k) continue;
+
+                            LV a(pt1[i], eta1[i], phi1[i], m1[i]);
+                            LV b(pt2[j], eta2[j], phi2[j], m2[j]);
+                            LV c(pt3[k], eta3[k], phi3[k], m3[k]);
+
+                            float score = selector(a, b, c, (int)i, (int)j, (int)k);
+                            if (!std::isfinite(score)) continue;
+
+                            bool take = (mode == MinimizeScore) ? (score < bestScore) : (score > bestScore);
+                            if (!take) continue;
+
+                            bestScore = score;
+
+                            best.idx1 = (int)i;
+                            best.idx2 = (int)j;
+                            best.idx3 = (int)k;
+
+                            best.score = score;
+
+                            const double m = (a + b + c).M();
+                            best.mass = (float)m;
+
+                            best.sumPt = (float)(a.Pt() + b.Pt() + c.Pt());
+
+                            const double dr12 = ROOT::Math::VectorUtil::DeltaR(a, b);
+                            const double dr13 = ROOT::Math::VectorUtil::DeltaR(a, c);
+                            const double dr23 = ROOT::Math::VectorUtil::DeltaR(b, c);
+
+                            best.dr12 = (float)dr12;
+                            best.dr13 = (float)dr13;
+                            best.dr23 = (float)dr23;
+
+                            const float minDr = (float)std::min(dr12, std::min(dr13, dr23));
+                            const float maxDr = (float)std::max(dr12, std::max(dr13, dr23));
+
+                            best.minDr = minDr;
+                            best.maxDr = maxDr;
+                        }
+                    }
+                }
+
+                return best;
+            },
+            {c1pt,c1eta,c1phi,c1m, c2pt,c2eta,c2phi,c2m, c3pt,c3eta,c3phi,c3m}
+        );
+
+        std::string c1low = LowerFirst(c1);
+        std::string c2low = LowerFirst(c2);
+        std::string c3low = LowerFirst(c3);
+
+        df = df.Define(out + "_" + c1low + "Idx1", [](const TrioCarrier& t){ return t.idx1; }, {carrier});
+        df = df.Define(out + "_" + c2low + "Idx2", [](const TrioCarrier& t){ return t.idx2; }, {carrier});
+        df = df.Define(out + "_" + c3low + "Idx3", [](const TrioCarrier& t){ return t.idx3; }, {carrier});
+
+        df = df.Define(out + "_score", [](const TrioCarrier& t){ return t.score; }, {carrier});
+
+        df = df.Define(out + "_mass",  [](const TrioCarrier& t){ return t.mass;  }, {carrier});
+        df = df.Define(out + "_sumPt", [](const TrioCarrier& t){ return t.sumPt; }, {carrier});
+
+        df = df.Define(out + "_dr12",  [](const TrioCarrier& t){ return t.dr12; }, {carrier});
+        df = df.Define(out + "_dr13",  [](const TrioCarrier& t){ return t.dr13; }, {carrier});
+        df = df.Define(out + "_dr23",  [](const TrioCarrier& t){ return t.dr23; }, {carrier});
+
+        df = df.Define(out + "_minDr", [](const TrioCarrier& t){ return t.minDr; }, {carrier});
+        df = df.Define(out + "_maxDr", [](const TrioCarrier& t){ return t.maxDr; }, {carrier});
+
+        return df;
+    }
+
+
 }
 
 

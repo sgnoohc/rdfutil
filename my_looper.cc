@@ -33,11 +33,13 @@ int main(int argc, char** argv)
     collection_building = RdfUtil::TrimCollectionByDeltaR(collection_building, "PreORGoodJet", "GoodLepton", "GoodJet", Jet_properties, 0.4f);
     collection_building = RdfUtil::MatchCollection(collection_building, "GoodLepton", "GoodGenLep", 0.1f);
     collection_building = RdfUtil::PairCollection(collection_building, "GoodLepton", "GoodLepton", "GoodZ", RdfUtil::selAbsMassDiff(91.1876), RdfUtil::MinimizeScore);
+    collection_building = RdfUtil::TrioCollection(collection_building, "GoodJet", "GoodJet", "GoodJet", "GoodTop", RdfUtil::selTrioAbsMassDiff(172.5), RdfUtil::MinimizeScore);
 
     // Print
     // (*collection_building.Display({"GoodLepton_goodGenLepIdx", "GoodLepton_pt", "GoodGenLep_lepOrigin", "GoodGenLep_pt"}, 23, 200)).Print();
     // (*collection_building.Display({"GoodLepton_eta", "GoodLepton_phi", "GoodGenLep_eta", "GoodGenLep_phi", "GoodGenLep_pdgId", "GoodGenLep_pt"}, 23, 200)).Print();
     (*collection_building.Display({"GoodZ_goodLeptonIdx1", "GoodZ_goodLeptonIdx2", "GoodLepton_goodGenLepIdx", "GoodGenLep_lepOrigin"}, 23, 200)).Print();
+    (*collection_building.Display({"GoodTop_goodJetIdx1", "GoodTop_goodJetIdx2", "GoodTop_goodJetIdx3"}, 23, 200)).Print();
 
     // Output
     auto cols_to_write = RdfUtil::SelectColumnNames(collection_building, {"Good*"});
