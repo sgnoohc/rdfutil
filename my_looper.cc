@@ -14,23 +14,12 @@ int main(int argc, char** argv)
     // Define a root node (all events with no filters and no modification)
     RNode root = rdf;
 
-    auto MakeIndexVec =
-        [](const ROOT::VecOps::RVec<float>& v) -> ROOT::VecOps::RVec<int>
-        {
-            using ROOT::VecOps::RVec;
-            const int n = v.size();
-            RVec<int> idx(n);
-            for (int i = 0; i < n; ++i) idx[i] = i;
-            return idx;
-        };
-
     // Select objects 
     RNode object_selections = root.Define("Muon_anaLooseID", muon_2018LooseID, muon_2018LooseID_inputs)
                                   .Define("Electron_anaLooseID", elec_2018LooseID, elec_2018LooseID_inputs)
                                   .Define("Jet_anaLooseID", jet_2018ID, jet_2018ID_inputs)
                                   .Define("GenPart_save", gen_mask, gen_mask_inputs)
                                   .Define("GenPart_lepOrigin", lep_origin_mask, lep_origin_mask_inputs)
-                                  .Define("GenPart_idx", MakeIndexVec, {"GenPart_pt"})
                                   ;
 
     // Create branches based on selected objects
@@ -46,11 +35,6 @@ int main(int argc, char** argv)
 
 
     // Print
-    // (*collection_building.Display({"GoodGenPart_pdgId", "GoodGenPart_status", "GoodGenPart_statusFlags", "GoodGenPart_pt"}, 9, 200)).Print();
-    // (*collection_building.Display({"GenPart_idx", "GenPart_pdgId", "GenPart_genPartIdxMother", "GenPart_lepOrigin", "GenPart_pt"}, 23, 200)).Print();
-    // (*collection_building.Display({"GoodGenLep_pdgId", "GoodGenLep_genPartIdxMother", "GoodGenLep_lepOrigin", "GoodGenLep_pt"}, 200, 200)).Print();
-    // (*collection_building.Display({"GenPart_idx", "GenPart_pdgId", "GenPart_genPartIdxMother", "GenPart_lepOrigin", "GenPart_pt"}, 200, 200)).Print();
-    // (*collection_building.Display({"GoodGenLep_pdgId", "GoodGenLep_status", "GoodGenLep_lepOrigin", "GoodGenLep_pt"}, 23, 200)).Print();
     // (*collection_building.Display({"GoodLepton_goodGenLepIdx", "GoodLepton_pt", "GoodGenLep_lepOrigin", "GoodGenLep_pt"}, 23, 200)).Print();
     // (*collection_building.Display({"GoodLepton_eta", "GoodLepton_phi", "GoodGenLep_eta", "GoodGenLep_phi", "GoodGenLep_pdgId", "GoodGenLep_pt"}, 23, 200)).Print();
 
