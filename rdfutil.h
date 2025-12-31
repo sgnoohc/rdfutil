@@ -889,6 +889,255 @@ namespace RdfUtil
 
         return df;
     }
+
+
+    // ============================================================================
+    // PairCollection helper for ROOT RDataFrame
+    //
+    // Purpose
+    //   Build the best object pair between two NanoAOD style collections according
+    //   to a user provided selector function.
+    //
+    // Summary
+    //   For each event all pairs (i,j) are scanned between collections p1 and p2.
+    //   The selector receives two LV four vectors and their indices and returns a
+    //   single float score. The best pair is chosen by minimizing or maximizing
+    //   that score.
+    //
+    // Selector convention
+    //   selector(const LV& obj1, const LV& obj2, int idx1, int idx2) -> float
+    //
+    //   The selector returns a finite score value for a valid pair. If the selector
+    //   returns NaN the pair is rejected.
+    //
+    // Missing mass handling
+    //   If p1_mass or p2_mass does not exist in the dataframe, a zero mass column
+    //   is created internally and used for four vector construction.
+    //
+    // Pairing rules
+    //   - If p1 and p2 are different collections, all (i,j) pairs are considered.
+    //   - If p1 and p2 are the same collection, pairs with i == j are skipped.
+    //   - Uniqueness constraints such as i < j can be enforced in the selector.
+    //
+    // Output branches
+    //   out_idx1   index of first object in p1
+    //   out_idx2   index of second object in p2
+    //   out_score  selected score value
+    //   out_mass   invariant mass of the selected pair
+    //   out_dr     delta r between the two objects
+    //   out_deta   delta eta between the two objects
+    //   out_dphi   delta phi between the two objects
+    //
+    // Typical use cases
+    //   - Closest object matching using minimum delta r
+    //   - Z candidate selection using minimum mass difference
+    //   - Dijet VBF like selection using maximum delta eta
+    //   - Highest mass dijet selection
+    //
+    // ============================================================================ 
+
+    struct PairCarrier
+    {
+        int idx1;
+        int idx2;
+
+        float score;
+
+        float mass;
+        float dr;
+        float deta;
+        float dphi;
+    };
+
+    enum PairOptMode
+    {
+        Min,
+        Max
+    };
+
+    static bool ColumnExists(ROOT::RDF::RNode df, const std::string& name)
+    {
+        const auto cols = df.GetColumnNames();
+        return std::find(cols.begin(), cols.end(), name) != cols.end();
+    }
+
+    using PairSelectorLV = std::function<float(const LV&, const LV&, int, int)>;
+
+    static float RejectScore()
+    {
+        return std::numeric_limits<float>::quiet_NaN();
+    }
+
+
+    static PairSelectorLV selDr()
+    {
+        return [](const LV& a, const LV& b, int, int)
+        {
+            LV ua(1.f, a.Eta(), a.Phi(), 0.f);
+            LV ub(1.f, b.Eta(), b.Phi(), 0.f);
+            return ROOT::Math::VectorUtil::DeltaR(ua, ub);
+        };
+    }
+
+    static PairSelectorLV selAbsDeta()
+    {
+        return [](const LV& a, const LV& b, int, int)
+        {
+            return std::abs(a.Eta() - b.Eta());
+        };
+    }
+
+    static PairSelectorLV selAbsDphi()
+    {
+        return [](const LV& a, const LV& b, int, int)
+        {
+            return std::abs(ROOT::Math::VectorUtil::DeltaPhi(a.Phi(), b.Phi()));
+        };
+    }
+
+    static PairSelectorLV selMass()
+    {
+        return [](const LV& a, const LV& b, int, int)
+        {
+            return (a + b).M();
+        };
+    }
+
+    static PairSelectorLV selAbsMassDiff(float target)
+    {
+        return [target](const LV& a, const LV& b, int, int)
+        {
+            return std::abs((a + b).M() - target);
+        };
+    }
+
+    static PairSelectorLV selDrWithPtMin(float ptMin1, float ptMin2)
+    {
+        return [ptMin1,ptMin2](const LV& a, const LV& b, int, int)
+        {
+            if (a.Pt() < ptMin1) return RejectScore();
+            if (b.Pt() < ptMin2) return RejectScore();
+
+            LV ua(1.f, a.Eta(), a.Phi(), 0.f);
+            LV ub(1.f, b.Eta(), b.Phi(), 0.f);
+            return ROOT::Math::VectorUtil::DeltaR(ua, ub);
+        };
+    }
+
+    static ROOT::RDF::RNode PairCollection(ROOT::RDF::RNode df,
+                                           const std::string& p1,
+                                           const std::string& p2,
+                                           const std::string& out,
+                                           PairSelectorLV selector,
+                                           PairOptMode mode = Min)
+    {
+        std::string p1pt  = p1 + "_pt";
+        std::string p1eta = p1 + "_eta";
+        std::string p1phi = p1 + "_phi";
+        std::string p1m   = p1 + "_mass";
+
+        std::string p2pt  = p2 + "_pt";
+        std::string p2eta = p2 + "_eta";
+        std::string p2phi = p2 + "_phi";
+        std::string p2m   = p2 + "_mass";
+
+        if (!ColumnExists(df, p1m))
+        {
+            std::string tmp = "__" + p1 + "_mass0";
+            df = df.Define(tmp, [](const RVec<float>& v){ return RVec<float>(v.size(), 0.f); }, {p1pt});
+            p1m = tmp;
+        }
+
+        if (!ColumnExists(df, p2m))
+        {
+            std::string tmp = "__" + p2 + "_mass0";
+            df = df.Define(tmp, [](const RVec<float>& v){ return RVec<float>(v.size(), 0.f); }, {p2pt});
+            p2m = tmp;
+        }
+
+        std::string carrier = "__" + out + "_pairCarrier";
+
+        df = df.Define(
+            carrier,
+            [selector,mode,p1,p2](const RVec<float>& pt1,
+                                  const RVec<float>& eta1,
+                                  const RVec<float>& phi1,
+                                  const RVec<float>& m1,
+                                  const RVec<float>& pt2,
+                                  const RVec<float>& eta2,
+                                  const RVec<float>& phi2,
+                                  const RVec<float>& m2)
+            {
+                PairCarrier best;
+                best.idx1  = -1;
+                best.idx2  = -1;
+                best.mass  = 0.f;
+                best.dr    = std::numeric_limits<float>::infinity();
+                best.deta  = 0.f;
+                best.dphi  = 0.f;
+
+                float bestScore = (mode == MinimizeScore)
+                    ? std::numeric_limits<float>::infinity()
+                    : -std::numeric_limits<float>::infinity();
+                best.score = bestScore;
+
+                // If the collection prefix is the same then
+                // we flag it so that we don't consider same object pair
+                bool same = (p1 == p2);
+
+                // If nothing to consider then return empty
+                const size_t n1 = pt1.size();
+                const size_t n2 = pt2.size();
+                if (n1 == 0 || n2 == 0)
+                    return best;
+
+                for (size_t i = 0; i < n1; ++i)
+                {
+                    for (size_t j = 0; j < n2; ++j)
+                    {
+                        // If same collection we skip when i == j
+                        if (same && i == j) continue;
+
+                        LV a(pt1[i], eta1[i], phi1[i], m1[i]);
+                        LV b(pt2[j], eta2[j], phi2[j], m2[j]);
+
+                        float score = selector(a, b, (int)i, (int)j);
+                        if (!std::isfinite(score)) continue;
+
+                        bool take = (mode == MinimizeScore) ? (score < bestScore) : (score > bestScore);
+                        if (!take) continue;
+
+                        bestScore = score;
+
+                        best.idx1  = (int)i;
+                        best.idx2  = (int)j;
+                        best.score = score;
+
+                        best.mass  = (a + b).M();
+
+                        best.dr   = ROOT::Math::VectorUtil::DeltaR(a, b);
+                        best.dphi = ROOT::Math::VectorUtil::DeltaPhi(a.Phi(), b.Phi());
+                        best.deta = a.Eta() - b.Eta();
+                    }
+                }
+
+                return best;
+            },
+            {p1pt,p1eta,p1phi,p1m,p2pt,p2eta,p2phi,p2m}
+        );
+
+        df = df.Define(out + "_idx1",  [](const PairCarrier& c){ return c.idx1;  }, {carrier});
+        df = df.Define(out + "_idx2",  [](const PairCarrier& c){ return c.idx2;  }, {carrier});
+        df = df.Define(out + "_score", [](const PairCarrier& c){ return c.score; }, {carrier});
+
+        df = df.Define(out + "_mass",  [](const PairCarrier& c){ return c.mass; }, {carrier});
+        df = df.Define(out + "_dr",    [](const PairCarrier& c){ return c.dr;   }, {carrier});
+        df = df.Define(out + "_deta",  [](const PairCarrier& c){ return c.deta; }, {carrier});
+        df = df.Define(out + "_dphi",  [](const PairCarrier& c){ return c.dphi; }, {carrier});
+
+        return df;
+    }
+
 }
 
 
