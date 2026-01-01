@@ -890,6 +890,175 @@ namespace RdfUtil
         return df;
     }
 
+    // ============================================================================
+    // MonoCollection helper for ROOT RDataFrame
+    //
+    // Purpose
+    //   Select the best single object from a NanoAOD style collection according to
+    //   a user provided selector function.
+    //
+    // Summary
+    //   For each event all objects i in the input collection are scanned. The
+    //   selector receives one LV four vector and its index and returns a single
+    //   float score. The best object is chosen by minimizing or maximizing that
+    //   score.
+    //
+    // Selector convention
+    //   selector(const LV& obj, int idx) -> float
+    //
+    //   The selector returns a finite score value for a valid object. If the
+    //   selector returns NaN the object is rejected.
+    //
+    // Missing mass handling
+    //   If prefix_mass does not exist in the dataframe, a zero mass column is
+    //   created internally and used for four vector construction.
+    //
+    // Output branches
+    //   out_prefixIdx1   index of selected object in prefix
+    //   out_score        selected score value
+    //   out_pt           selected object pt
+    //   out_eta          selected object eta
+    //   out_phi          selected object phi
+    //   out_mass         selected object mass
+    //
+    // Typical use cases
+    //   - Leading object tagging (maximize pt)
+    //   - Closest to target mass object (minimize abs(m - target))
+    //   - Best ID or quality object (maximize discriminator)
+    //
+    // ============================================================================
+
+    enum OptMode
+    {
+        MinimizeScore,
+        MaximizeScore
+    };
+
+    static bool ColumnExists(ROOT::RDF::RNode df, const std::string& name)
+    {
+        const auto cols = df.GetColumnNames();
+        return std::find(cols.begin(), cols.end(), name) != cols.end();
+    }
+
+    struct MonoCarrier
+    {
+        int idx1;
+        float score;
+
+        float pt;
+        float eta;
+        float phi;
+        float mass;
+        float extra;
+    };
+
+    using MonoSelectorLV = std::function<float(const LV&, int, float)>;
+
+    static ROOT::RDF::RNode MonoCollection(ROOT::RDF::RNode df,
+                                           const std::string& prefix,
+                                           const std::string& out,
+                                           MonoSelectorLV selector,
+                                           OptMode mode = MaximizeScore,
+                                           const std::string& extra="")
+    {
+        std::string pt  = prefix + "_pt";
+        std::string eta = prefix + "_eta";
+        std::string phi = prefix + "_phi";
+        std::string m   = prefix + "_mass";
+        std::string ext = prefix + "_" + extra;
+
+        // Missing mass handling
+        if (!ColumnExists(df, m))
+        {
+            std::string tmp = "__" + prefix + "_mass0";
+            if (!ColumnExists(df, tmp))
+                df = df.Define(tmp,
+                               [](const RVec<float>& v){ return RVec<float>(v.size(), 0.f); },
+                               {pt});
+            m = tmp;
+        }
+
+        // Missing extra column handling
+        if (!ColumnExists(df, ext))
+        {
+            std::string tmp = "__" + prefix + "_extra0";
+            if (!ColumnExists(df, tmp))
+                df = df.Define(tmp,
+                               [](const RVec<float>& v){ return RVec<float>(v.size(), 0.f); },
+                               {pt});
+            ext = tmp;
+        }
+
+
+        std::string carrier = "__" + out + "_monoCarrier";
+
+        df = df.Define(
+            carrier,
+            [selector,mode](const RVec<float>& vpt,
+                            const RVec<float>& veta,
+                            const RVec<float>& vphi,
+                            const RVec<float>& vm,
+                            const RVec<float>& vext)
+            {
+                MonoCarrier best;
+                best.idx1 = -1;
+
+                float bestScore = (mode == MinimizeScore)
+                    ? std::numeric_limits<float>::infinity()
+                    : -std::numeric_limits<float>::infinity();
+                best.score = bestScore;
+
+                best.pt = 0.f;
+                best.eta = 0.f;
+                best.phi = 0.f;
+                best.mass = 0.f;
+
+                const size_t n = vpt.size();
+                if (n == 0) return best;
+
+                for (size_t i = 0; i < n; ++i)
+                {
+                    LV a(vpt[i], veta[i], vphi[i], vm[i]);
+
+                    float score = selector(a, (int)i, vext[i]);
+                    if (!std::isfinite(score)) continue;
+
+                    bool take = (mode == MinimizeScore) ? (score < bestScore) : (score > bestScore);
+                    if (!take) continue;
+
+                    bestScore = score;
+
+                    best.idx1 = (int)i;
+                    best.score = score;
+
+                    best.pt = (float)a.Pt();
+                    best.eta = (float)a.Eta();
+                    best.phi = (float)a.Phi();
+                    best.mass = (float)a.M();
+                }
+
+                return best;
+            },
+            {pt, eta, phi, m, ext}
+        );
+
+        // Lowercase first letter prefix for index branch naming
+        std::string plow = prefix;
+        if (!plow.empty()) plow[0] = (char)std::tolower((unsigned char)plow[0]);
+
+        df = df.Define(out + "_" + plow + "Idx1", [](const MonoCarrier& c){ return c.idx1;  }, {carrier});
+        df = df.Define(out + "_score",           [](const MonoCarrier& c){ return c.score; }, {carrier});
+
+        df = df.Define(out + "_pt",    [](const MonoCarrier& c){ return c.pt;    }, {carrier});
+        df = df.Define(out + "_eta",   [](const MonoCarrier& c){ return c.eta;   }, {carrier});
+        df = df.Define(out + "_phi",   [](const MonoCarrier& c){ return c.phi;   }, {carrier});
+        df = df.Define(out + "_mass",  [](const MonoCarrier& c){ return c.mass;  }, {carrier});
+        df = df.Define(out + "_extra", [](const MonoCarrier& c){ return c.extra; }, {carrier});
+
+        return df;
+    }
+
+
 
     // ============================================================================
     // PairCollection helper for ROOT RDataFrame
@@ -943,25 +1112,16 @@ namespace RdfUtil
 
         float score;
 
+        float pt;
+        float eta;
+        float phi;
         float mass;
         float dr;
         float deta;
         float dphi;
     };
 
-    enum PairOptMode
-    {
-        MinimizeScore,
-        MaximizeScore
-    };
-
-    static bool ColumnExists(ROOT::RDF::RNode df, const std::string& name)
-    {
-        const auto cols = df.GetColumnNames();
-        return std::find(cols.begin(), cols.end(), name) != cols.end();
-    }
-
-    using PairSelectorLV = std::function<float(const LV&, const LV&, int, int)>;
+    using PairSelectorLV = std::function<float(const LV&, const LV&, int, int, float, float)>;
 
     static float RejectScore()
     {
@@ -971,7 +1131,7 @@ namespace RdfUtil
 
     static PairSelectorLV selDr()
     {
-        return [](const LV& a, const LV& b, int, int)
+        return [](const LV& a, const LV& b, int, int, float, float)
         {
             return (float) ROOT::Math::VectorUtil::DeltaR(a, b);
         };
@@ -979,7 +1139,7 @@ namespace RdfUtil
 
     static PairSelectorLV selAbsDeta()
     {
-        return [](const LV& a, const LV& b, int, int)
+        return [](const LV& a, const LV& b, int, int, float, float)
         {
             return std::abs(a.Eta() - b.Eta());
         };
@@ -987,7 +1147,7 @@ namespace RdfUtil
 
     static PairSelectorLV selAbsDphi()
     {
-        return [](const LV& a, const LV& b, int, int)
+        return [](const LV& a, const LV& b, int, int, float, float)
         {
             return (float) std::abs(ROOT::Math::VectorUtil::DeltaPhi(a, b));
         };
@@ -995,7 +1155,7 @@ namespace RdfUtil
 
     static PairSelectorLV selMass()
     {
-        return [](const LV& a, const LV& b, int, int)
+        return [](const LV& a, const LV& b, int, int, float, float)
         {
             return (a + b).M();
         };
@@ -1003,7 +1163,7 @@ namespace RdfUtil
 
     static PairSelectorLV selAbsMassDiff(float target)
     {
-        return [target](const LV& a, const LV& b, int, int)
+        return [target](const LV& a, const LV& b, int, int, float, float)
         {
             return std::abs((a + b).M() - target);
         };
@@ -1011,7 +1171,7 @@ namespace RdfUtil
 
     static PairSelectorLV selDrWithPtMin(float ptMin1, float ptMin2)
     {
-        return [ptMin1,ptMin2](const LV& a, const LV& b, int, int)
+        return [ptMin1,ptMin2](const LV& a, const LV& b, int, int, float, float)
         {
             if (a.Pt() < ptMin1) return RejectScore();
             if (b.Pt() < ptMin2) return RejectScore();
@@ -1025,17 +1185,21 @@ namespace RdfUtil
                                            const std::string& p2,
                                            const std::string& out,
                                            PairSelectorLV selector,
-                                           PairOptMode mode = MinimizeScore)
+                                           OptMode mode = MinimizeScore,
+                                           const std::string& extra1="",
+                                           const std::string& extra2="")
     {
         std::string p1pt  = p1 + "_pt";
         std::string p1eta = p1 + "_eta";
         std::string p1phi = p1 + "_phi";
         std::string p1m   = p1 + "_mass";
+        std::string p1ext = p1 + "_" + extra1;
 
         std::string p2pt  = p2 + "_pt";
         std::string p2eta = p2 + "_eta";
         std::string p2phi = p2 + "_phi";
         std::string p2m   = p2 + "_mass";
+        std::string p2ext = p2 + "_" + extra2;
 
         if (!ColumnExists(df, p1m))
         {
@@ -1062,6 +1226,31 @@ namespace RdfUtil
             }
         }
 
+        if (!ColumnExists(df, p1ext))
+        {
+            std::string tmp1 = "__" + p1 + "_extra0";
+            df = df.Define(tmp1, [](const RVec<float>& v){ return RVec<float>(v.size(), 0.f); }, {p1pt});
+            p1ext = tmp1;
+        }
+
+        if (!ColumnExists(df, p2ext))
+        {
+            if (p2 == p1)
+            {
+                // same collection: reuse p2ext (already real mass or temp mass0)
+                p2ext = p1ext;
+            }
+            else
+            {
+                std::string tmp2 = "__" + p2 + "_extra0";
+                if (!ColumnExists(df, tmp2))
+                    df = df.Define(tmp2,
+                                   [](const RVec<float>& v){ return RVec<float>(v.size(), 0.f); },
+                                   {p2pt});
+                p2ext = tmp2;
+            }
+        }
+
         std::string carrier = "__" + out + "_pairCarrier";
 
         df = df.Define(
@@ -1070,14 +1259,19 @@ namespace RdfUtil
                                   const RVec<float>& eta1,
                                   const RVec<float>& phi1,
                                   const RVec<float>& m1,
+                                  const RVec<float>& ext1,
                                   const RVec<float>& pt2,
                                   const RVec<float>& eta2,
                                   const RVec<float>& phi2,
-                                  const RVec<float>& m2)
+                                  const RVec<float>& m2,
+                                  const RVec<float>& ext2)
             {
                 PairCarrier best;
                 best.idx1  = -1;
                 best.idx2  = -1;
+                best.pt    = 0.f;
+                best.eta   = std::numeric_limits<float>::infinity();
+                best.phi   = 0.f;
                 best.mass  = 0.f;
                 best.dr    = std::numeric_limits<float>::infinity();
                 best.deta  = 0.f;
@@ -1108,7 +1302,7 @@ namespace RdfUtil
                         LV a(pt1[i], eta1[i], phi1[i], m1[i]);
                         LV b(pt2[j], eta2[j], phi2[j], m2[j]);
 
-                        float score = selector(a, b, (int)i, (int)j);
+                        float score = selector(a, b, (int)i, (int)j, ext1[i], ext2[j]);
                         if (!std::isfinite(score)) continue;
 
                         bool take = (mode == MinimizeScore) ? (score < bestScore) : (score > bestScore);
@@ -1120,7 +1314,11 @@ namespace RdfUtil
                         best.idx2  = (int)j;
                         best.score = score;
 
-                        best.mass  = (a + b).M();
+                        LV pair = (a + b);
+                        best.pt  = pair.Pt();
+                        best.eta  = pair.Eta();
+                        best.phi  = pair.Phi();
+                        best.mass  = pair.M();
 
                         best.dr   = ROOT::Math::VectorUtil::DeltaR(a, b);
                         best.dphi = ROOT::Math::VectorUtil::DeltaPhi(a, b);
@@ -1130,7 +1328,7 @@ namespace RdfUtil
 
                 return best;
             },
-            {p1pt,p1eta,p1phi,p1m,p2pt,p2eta,p2phi,p2m}
+            {p1pt,p1eta,p1phi,p1m,p1ext,p2pt,p2eta,p2phi,p2m,p2ext}
         );
 
         // Lower case first letter prefix for out collection idx prefix
@@ -1150,6 +1348,9 @@ namespace RdfUtil
         df = df.Define(out + "_" + p2low + "Idx2",  [](const PairCarrier& c){ return c.idx2;  }, {carrier});
         df = df.Define(out + "_score", [](const PairCarrier& c){ return c.score; }, {carrier});
 
+        df = df.Define(out + "_pt",    [](const PairCarrier& c){ return c.pt;   }, {carrier});
+        df = df.Define(out + "_eta",   [](const PairCarrier& c){ return c.eta;  }, {carrier});
+        df = df.Define(out + "_phi",   [](const PairCarrier& c){ return c.phi;  }, {carrier});
         df = df.Define(out + "_mass",  [](const PairCarrier& c){ return c.mass; }, {carrier});
         df = df.Define(out + "_dr",    [](const PairCarrier& c){ return c.dr;   }, {carrier});
         df = df.Define(out + "_deta",  [](const PairCarrier& c){ return c.deta; }, {carrier});
@@ -1223,8 +1424,10 @@ namespace RdfUtil
 
         float score;
 
+        float pt;
+        float eta;
+        float phi;
         float mass;
-        float sumPt;
 
         float dr12;
         float dr13;
@@ -1234,11 +1437,11 @@ namespace RdfUtil
         float maxDr;
     };
 
-    using TrioSelectorLV = std::function<float(const LV&, const LV&, const LV&, int, int, int)>;
+    using TrioSelectorLV = std::function<float(const LV&, const LV&, const LV&, int, int, int, float, float, float)>;
 
     static TrioSelectorLV selTrioMass()
     {
-        return [](const LV& a, const LV& b, const LV& c, int, int, int) -> float
+        return [](const LV& a, const LV& b, const LV& c, int, int, int, float, float, float) -> float
         {
             return (float)(a + b + c).M();
         };
@@ -1246,7 +1449,7 @@ namespace RdfUtil
 
     static TrioSelectorLV selTrioAbsMassDiff(float target)
     {
-        return [target](const LV& a, const LV& b, const LV& c, int, int, int) -> float
+        return [target](const LV& a, const LV& b, const LV& c, int, int, int, float, float, float) -> float
         {
             return (float)std::abs((a + b + c).M() - (double)target);
         };
@@ -1254,7 +1457,7 @@ namespace RdfUtil
 
     static TrioSelectorLV selTrioMinDr()
     {
-        return [](const LV& a, const LV& b, const LV& c, int, int, int) -> float
+        return [](const LV& a, const LV& b, const LV& c, int, int, int, float, float, float) -> float
         {
             const double dr12 = ROOT::Math::VectorUtil::DeltaR(a, b);
             const double dr13 = ROOT::Math::VectorUtil::DeltaR(a, c);
@@ -1265,7 +1468,7 @@ namespace RdfUtil
 
     static TrioSelectorLV selTrioMaxDr()
     {
-        return [](const LV& a, const LV& b, const LV& c, int, int, int) -> float
+        return [](const LV& a, const LV& b, const LV& c, int, int, int, float, float, float) -> float
         {
             const double dr12 = ROOT::Math::VectorUtil::DeltaR(a, b);
             const double dr13 = ROOT::Math::VectorUtil::DeltaR(a, c);
@@ -1276,7 +1479,7 @@ namespace RdfUtil
 
     static TrioSelectorLV selTrioSumPt()
     {
-        return [](const LV& a, const LV& b, const LV& c, int, int, int) -> float
+        return [](const LV& a, const LV& b, const LV& c, int, int, int, float, float, float) -> float
         {
             return (float)(a.Pt() + b.Pt() + c.Pt());
         };
@@ -1284,7 +1487,7 @@ namespace RdfUtil
 
     static TrioSelectorLV selTrioMassWithPtMin(float ptMin1, float ptMin2, float ptMin3)
     {
-        return [ptMin1,ptMin2,ptMin3](const LV& a, const LV& b, const LV& c, int, int, int) -> float
+        return [ptMin1,ptMin2,ptMin3](const LV& a, const LV& b, const LV& c, int, int, int, float, float, float) -> float
         {
             if (a.Pt() < ptMin1) return RejectScore();
             if (b.Pt() < ptMin2) return RejectScore();
@@ -1308,22 +1511,28 @@ namespace RdfUtil
                                            const std::string& c3,
                                            const std::string& out,
                                            TrioSelectorLV selector,
-                                           PairOptMode mode = MinimizeScore)
+                                           OptMode mode = MinimizeScore,
+                                           const std::string& ext1="",
+                                           const std::string& ext2="",
+                                           const std::string& ext3="")
     {
         std::string c1pt  = c1 + "_pt";
         std::string c1eta = c1 + "_eta";
         std::string c1phi = c1 + "_phi";
         std::string c1m   = c1 + "_mass";
+        std::string c1ext = c1 + "_" + ext1;
 
         std::string c2pt  = c2 + "_pt";
         std::string c2eta = c2 + "_eta";
         std::string c2phi = c2 + "_phi";
         std::string c2m   = c2 + "_mass";
+        std::string c2ext = c2 + "_" + ext2;
 
         std::string c3pt  = c3 + "_pt";
         std::string c3eta = c3 + "_eta";
         std::string c3phi = c3 + "_phi";
         std::string c3m   = c3 + "_mass";
+        std::string c3ext = c3 + "_" + ext3;
 
         // Missing mass handling with safe reuse when collection names collide
         if (!ColumnExists(df, c1m))
@@ -1359,6 +1568,40 @@ namespace RdfUtil
             }
         }
 
+        // Missing mass handling with safe reuse when collection names collide
+        if (!ColumnExists(df, c1ext))
+        {
+            std::string tmp = "__" + c1 + "_mass0";
+            if (!ColumnExists(df, tmp))
+                df = df.Define(tmp, [](const RVec<float>& v){ return RVec<float>(v.size(), 0.f); }, {c1pt});
+            c1ext = tmp;
+        }
+
+        if (!ColumnExists(df, c2ext))
+        {
+            if (c2 == c1) c2ext = c1ext;
+            else
+            {
+                std::string tmp = "__" + c2 + "_mass0";
+                if (!ColumnExists(df, tmp))
+                    df = df.Define(tmp, [](const RVec<float>& v){ return RVec<float>(v.size(), 0.f); }, {c2pt});
+                c2ext = tmp;
+            }
+        }
+
+        if (!ColumnExists(df, c3ext))
+        {
+            if (c3 == c1) c3ext = c1ext;
+            else if (c3 == c2) c3ext = c2ext;
+            else
+            {
+                std::string tmp = "__" + c3 + "_mass0";
+                if (!ColumnExists(df, tmp))
+                    df = df.Define(tmp, [](const RVec<float>& v){ return RVec<float>(v.size(), 0.f); }, {c3pt});
+                c3ext = tmp;
+            }
+        }
+
         std::string carrier = "__" + out + "_trioCarrier";
 
         df = df.Define(
@@ -1367,14 +1610,17 @@ namespace RdfUtil
                                      const RVec<float>& eta1,
                                      const RVec<float>& phi1,
                                      const RVec<float>& m1,
+                                     const RVec<float>& vext1,
                                      const RVec<float>& pt2,
                                      const RVec<float>& eta2,
                                      const RVec<float>& phi2,
                                      const RVec<float>& m2,
+                                     const RVec<float>& vext2,
                                      const RVec<float>& pt3,
                                      const RVec<float>& eta3,
                                      const RVec<float>& phi3,
-                                     const RVec<float>& m3)
+                                     const RVec<float>& m3,
+                                     const RVec<float>& vext3)
             {
                 TrioCarrier best;
                 best.idx1 = -1;
@@ -1387,8 +1633,10 @@ namespace RdfUtil
 
                 best.score = bestScore;
 
+                best.pt = 0.f;
+                best.eta = std::numeric_limits<float>::infinity();
+                best.phi = 0.f;
                 best.mass = 0.f;
-                best.sumPt = 0.f;
 
                 best.dr12 = std::numeric_limits<float>::infinity();
                 best.dr13 = std::numeric_limits<float>::infinity();
@@ -1420,7 +1668,7 @@ namespace RdfUtil
                             LV b(pt2[j], eta2[j], phi2[j], m2[j]);
                             LV c(pt3[k], eta3[k], phi3[k], m3[k]);
 
-                            float score = selector(a, b, c, (int)i, (int)j, (int)k);
+                            float score = selector(a, b, c, (int)i, (int)j, (int)k, vext1[i], vext2[j], vext3[k]);
                             if (!std::isfinite(score)) continue;
 
                             bool take = (mode == MinimizeScore) ? (score < bestScore) : (score > bestScore);
@@ -1434,10 +1682,11 @@ namespace RdfUtil
 
                             best.score = score;
 
-                            const double m = (a + b + c).M();
-                            best.mass = (float)m;
-
-                            best.sumPt = (float)(a.Pt() + b.Pt() + c.Pt());
+                            LV trio = (a + b + c);
+                            best.pt = (float)trio.Pt();
+                            best.eta = (float)trio.Eta();
+                            best.phi = (float)trio.Phi();
+                            best.mass = (float)trio.M();
 
                             const double dr12 = ROOT::Math::VectorUtil::DeltaR(a, b);
                             const double dr13 = ROOT::Math::VectorUtil::DeltaR(a, c);
@@ -1458,7 +1707,7 @@ namespace RdfUtil
 
                 return best;
             },
-            {c1pt,c1eta,c1phi,c1m, c2pt,c2eta,c2phi,c2m, c3pt,c3eta,c3phi,c3m}
+            {c1pt,c1eta,c1phi,c1m,c1ext,c2pt,c2eta,c2phi,c2m,c2ext,c3pt,c3eta,c3phi,c3m,c3ext}
         );
 
         std::string c1low = LowerFirst(c1);
@@ -1471,8 +1720,10 @@ namespace RdfUtil
 
         df = df.Define(out + "_score", [](const TrioCarrier& t){ return t.score; }, {carrier});
 
-        df = df.Define(out + "_mass",  [](const TrioCarrier& t){ return t.mass;  }, {carrier});
-        df = df.Define(out + "_sumPt", [](const TrioCarrier& t){ return t.sumPt; }, {carrier});
+        df = df.Define(out + "_pt",    [](const TrioCarrier& t){ return t.pt;   }, {carrier});
+        df = df.Define(out + "_eta",   [](const TrioCarrier& t){ return t.eta;  }, {carrier});
+        df = df.Define(out + "_phi",   [](const TrioCarrier& t){ return t.phi;  }, {carrier});
+        df = df.Define(out + "_mass",  [](const TrioCarrier& t){ return t.mass; }, {carrier});
 
         df = df.Define(out + "_dr12",  [](const TrioCarrier& t){ return t.dr12; }, {carrier});
         df = df.Define(out + "_dr13",  [](const TrioCarrier& t){ return t.dr13; }, {carrier});
