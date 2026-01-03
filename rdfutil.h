@@ -314,6 +314,18 @@ inline std::vector<std::string> Electron_properties =
     "miniPFRelIso_all"
 };
 
+inline std::vector<std::string> GoodLepton_properties =
+{
+    "pt",
+    "eta",
+    "phi",
+    "charge",
+    "goodGenLepDr",
+    "goodGenLepIdx",
+    "goodZIdx",
+    "srcIdx",
+};
+
 inline std::vector<std::string> Jet_properties =
 {
     "pt",
@@ -353,6 +365,20 @@ inline std::vector<std::string> GenPart_properties =
 // ==============================================================================
 namespace RdfUtil
 {
+
+    static std::string LowerFirst(const std::string& s)
+    {
+        if (s.empty()) return s;
+        std::string r = s;
+        r[0] = (char)std::tolower((unsigned char)r[0]);
+        return r;
+    }
+
+    static bool ColumnExists(ROOT::RDF::RNode df, const std::string& name)
+    {
+        const auto cols = df.GetColumnNames();
+        return std::find(cols.begin(), cols.end(), name) != cols.end();
+    }
 
     // ============================================================================
     // Build a Good object collection from a NanoAOD style collection and a mask
@@ -398,6 +424,8 @@ namespace RdfUtil
                                 const std::vector<std::string>& branchSuffixes)
     {
         const std::string nOutCol = "n" + outPrefix;
+        const std::string idxOutCol = outPrefix + "_" + LowerFirst(inPrefix) + "Idx";
+
 
         RNode out = df;
 
@@ -411,6 +439,11 @@ namespace RdfUtil
             const std::string expr = inCol + "[" + maskCol + "]";
             out = out.Define(outCol, expr);
         }
+
+        // Store original indices of surviving objects
+        const std::string idxExpr = "Nonzero(" + maskCol + ")";
+        out = out.Define(idxOutCol, idxExpr);
+
 
         const std::string countExpr = "(int)Sum(" + maskCol + ")";
         out = out.Define(nOutCol, countExpr);
@@ -934,33 +967,29 @@ namespace RdfUtil
         MaximizeScore
     };
 
-    static bool ColumnExists(ROOT::RDF::RNode df, const std::string& name)
-    {
-        const auto cols = df.GetColumnNames();
-        return std::find(cols.begin(), cols.end(), name) != cols.end();
-    }
-
-    struct MonoCarrier
-    {
-        int idx1;
-        float score;
-
-        float pt;
-        float eta;
-        float phi;
-        float mass;
-        float extra;
-    };
-
     using MonoSelectorLV = std::function<float(const LV&, int, float)>;
 
-    static ROOT::RDF::RNode MonoCollection(ROOT::RDF::RNode df,
+    struct MonoCarrierRVec
+    {
+        ROOT::VecOps::RVec<int>   idx1;
+        ROOT::VecOps::RVec<float> score;
+
+        ROOT::VecOps::RVec<float> pt;
+        ROOT::VecOps::RVec<float> eta;
+        ROOT::VecOps::RVec<float> phi;
+        ROOT::VecOps::RVec<float> mass;
+        ROOT::VecOps::RVec<float> extra;
+    };
+
+    static RNode MonoCollection(ROOT::RDF::RNode df,
                                            const std::string& prefix,
                                            const std::string& out,
                                            MonoSelectorLV selector,
                                            OptMode mode = MaximizeScore,
-                                           const std::string& extra="")
+                                           const std::string& extra = "")
     {
+        using ROOT::VecOps::RVec;
+
         std::string pt  = prefix + "_pt";
         std::string eta = prefix + "_eta";
         std::string phi = prefix + "_phi";
@@ -989,74 +1018,75 @@ namespace RdfUtil
             ext = tmp;
         }
 
-
-        std::string carrier = "__" + out + "_monoCarrier";
+        const std::string carrier = "__" + out + "_monoCarrierRVec";
 
         df = df.Define(
             carrier,
-            [selector,mode](const RVec<float>& vpt,
-                            const RVec<float>& veta,
-                            const RVec<float>& vphi,
-                            const RVec<float>& vm,
-                            const RVec<float>& vext)
+            [selector, mode](const RVec<float>& vpt,
+                             const RVec<float>& veta,
+                             const RVec<float>& vphi,
+                             const RVec<float>& vm,
+                             const RVec<float>& vext) -> MonoCarrierRVec
             {
-                MonoCarrier best;
-                best.idx1 = -1;
+                MonoCarrierRVec outv; // empty => no selection
+
+                const size_t n = vpt.size();
+                if (n == 0) return outv;
 
                 float bestScore = (mode == MinimizeScore)
                     ? std::numeric_limits<float>::infinity()
                     : -std::numeric_limits<float>::infinity();
-                best.score = bestScore;
 
-                best.pt = 0.f;
-                best.eta = 0.f;
-                best.phi = 0.f;
-                best.mass = 0.f;
-
-                const size_t n = vpt.size();
-                if (n == 0) return best;
+                int bestI = -1;
 
                 for (size_t i = 0; i < n; ++i)
                 {
                     LV a(vpt[i], veta[i], vphi[i], vm[i]);
 
-                    float score = selector(a, (int)i, vext[i]);
+                    const float score = selector(a, (int)i, vext[i]);
                     if (!std::isfinite(score)) continue;
 
-                    bool take = (mode == MinimizeScore) ? (score < bestScore) : (score > bestScore);
+                    const bool take = (mode == MinimizeScore) ? (score < bestScore) : (score > bestScore);
                     if (!take) continue;
 
                     bestScore = score;
-
-                    best.idx1 = (int)i;
-                    best.score = score;
-
-                    best.pt = (float)a.Pt();
-                    best.eta = (float)a.Eta();
-                    best.phi = (float)a.Phi();
-                    best.mass = (float)a.M();
+                    bestI = (int)i;
                 }
 
-                return best;
+                if (bestI < 0) return outv;
+
+                // Fill length-1 outputs
+                LV a(vpt[bestI], veta[bestI], vphi[bestI], vm[bestI]);
+
+                outv.idx1  = RVec<int>{bestI};
+                outv.score = RVec<float>{bestScore};
+
+                outv.pt    = RVec<float>{(float)a.Pt()};
+                outv.eta   = RVec<float>{(float)a.Eta()};
+                outv.phi   = RVec<float>{(float)a.Phi()};
+                outv.mass  = RVec<float>{(float)a.M()};
+                outv.extra = RVec<float>{(float)vext[bestI]};
+
+                return outv;
             },
             {pt, eta, phi, m, ext}
         );
 
         // Lowercase first letter prefix for index branch naming
-        std::string plow = prefix;
-        if (!plow.empty()) plow[0] = (char)std::tolower((unsigned char)plow[0]);
+        const std::string plow = LowerFirst(prefix);
 
-        df = df.Define(out + "_" + plow + "Idx1", [](const MonoCarrier& c){ return c.idx1;  }, {carrier});
-        df = df.Define(out + "_score",           [](const MonoCarrier& c){ return c.score; }, {carrier});
+        df = df.Define(out + "_" + plow + "Idx1", [](const MonoCarrierRVec& c) -> RVec<int>   { return c.idx1;  }, {carrier});
+        df = df.Define(out + "_score",           [](const MonoCarrierRVec& c) -> RVec<float> { return c.score; }, {carrier});
 
-        df = df.Define(out + "_pt",    [](const MonoCarrier& c){ return c.pt;    }, {carrier});
-        df = df.Define(out + "_eta",   [](const MonoCarrier& c){ return c.eta;   }, {carrier});
-        df = df.Define(out + "_phi",   [](const MonoCarrier& c){ return c.phi;   }, {carrier});
-        df = df.Define(out + "_mass",  [](const MonoCarrier& c){ return c.mass;  }, {carrier});
-        df = df.Define(out + "_extra", [](const MonoCarrier& c){ return c.extra; }, {carrier});
+        df = df.Define(out + "_pt",    [](const MonoCarrierRVec& c) -> RVec<float> { return c.pt;    }, {carrier});
+        df = df.Define(out + "_eta",   [](const MonoCarrierRVec& c) -> RVec<float> { return c.eta;   }, {carrier});
+        df = df.Define(out + "_phi",   [](const MonoCarrierRVec& c) -> RVec<float> { return c.phi;   }, {carrier});
+        df = df.Define(out + "_mass",  [](const MonoCarrierRVec& c) -> RVec<float> { return c.mass;  }, {carrier});
+        df = df.Define(out + "_extra", [](const MonoCarrierRVec& c) -> RVec<float> { return c.extra; }, {carrier});
 
         return df;
     }
+
 
 
 
@@ -1105,20 +1135,20 @@ namespace RdfUtil
     //
     // ============================================================================ 
 
-    struct PairCarrier
+    // Carrier now stores RVec outputs (size 0 or 1)
+    struct PairCarrierRVec
     {
-        int idx1;
-        int idx2;
+        RVec<int>   idx1;
+        RVec<int>   idx2;
+        RVec<float> score;
 
-        float score;
-
-        float pt;
-        float eta;
-        float phi;
-        float mass;
-        float dr;
-        float deta;
-        float dphi;
+        RVec<float> pt;
+        RVec<float> eta;
+        RVec<float> phi;
+        RVec<float> mass;
+        RVec<float> dr;
+        RVec<float> deta;
+        RVec<float> dphi;
     };
 
     using PairSelectorLV = std::function<float(const LV&, const LV&, int, int, float, float)>;
@@ -1180,7 +1210,7 @@ namespace RdfUtil
         };
     }
 
-    static ROOT::RDF::RNode PairCollection(ROOT::RDF::RNode df,
+    static RNode PairCollection(ROOT::RDF::RNode df,
                                            const std::string& p1,
                                            const std::string& p2,
                                            const std::string& out,
@@ -1189,6 +1219,8 @@ namespace RdfUtil
                                            const std::string& extra1="",
                                            const std::string& extra2="")
     {
+        using ROOT::VecOps::RVec;
+
         std::string p1pt  = p1 + "_pt";
         std::string p1eta = p1 + "_eta";
         std::string p1phi = p1 + "_phi";
@@ -1201,10 +1233,12 @@ namespace RdfUtil
         std::string p2m   = p2 + "_mass";
         std::string p2ext = p2 + "_" + extra2;
 
+        // Missing mass handling (same as your current implementation)
         if (!ColumnExists(df, p1m))
         {
             std::string tmp1 = "__" + p1 + "_mass0";
-            df = df.Define(tmp1, [](const RVec<float>& v){ return RVec<float>(v.size(), 0.f); }, {p1pt});
+            if (!ColumnExists(df, tmp1))
+                df = df.Define(tmp1, [](const RVec<float>& v){ return RVec<float>(v.size(), 0.f); }, {p1pt});
             p1m = tmp1;
         }
 
@@ -1212,24 +1246,25 @@ namespace RdfUtil
         {
             if (p2 == p1)
             {
-                // same collection: reuse p1m (already real mass or temp mass0)
                 p2m = p1m;
             }
             else
             {
                 std::string tmp2 = "__" + p2 + "_mass0";
                 if (!ColumnExists(df, tmp2))
-                    df = df.Define(tmp2,
-                                   [](const RVec<float>& v){ return RVec<float>(v.size(), 0.f); },
-                                   {p2pt});
+                    df = df.Define(tmp2, [](const RVec<float>& v){ return RVec<float>(v.size(), 0.f); }, {p2pt});
                 p2m = tmp2;
             }
         }
 
+        // Missing extra handling (same style as you do now)
         if (!ColumnExists(df, p1ext))
         {
             std::string tmp1 = "__" + p1 + "_extra0";
-            df = df.Define(tmp1, [](const RVec<float>& v){ return RVec<float>(v.size(), 0.f); }, {p1pt});
+            if (!ColumnExists(df, tmp1))
+            {
+                df = df.Define(tmp1, [](const RVec<float>& v){ return RVec<float>(v.size(), 0.f); }, {p1pt});
+            }
             p1ext = tmp1;
         }
 
@@ -1237,127 +1272,193 @@ namespace RdfUtil
         {
             if (p2 == p1)
             {
-                // same collection: reuse p2ext (already real mass or temp mass0)
                 p2ext = p1ext;
             }
             else
             {
                 std::string tmp2 = "__" + p2 + "_extra0";
                 if (!ColumnExists(df, tmp2))
-                    df = df.Define(tmp2,
-                                   [](const RVec<float>& v){ return RVec<float>(v.size(), 0.f); },
-                                   {p2pt});
+                    df = df.Define(tmp2, [](const RVec<float>& v){ return RVec<float>(v.size(), 0.f); }, {p2pt});
                 p2ext = tmp2;
             }
         }
 
-        std::string carrier = "__" + out + "_pairCarrier";
+        std::string carrier = "__" + out + "_pairCarrierRVec";
 
         df = df.Define(
             carrier,
-            [selector,mode,p1,p2](const RVec<float>& pt1,
-                                  const RVec<float>& eta1,
-                                  const RVec<float>& phi1,
-                                  const RVec<float>& m1,
-                                  const RVec<float>& ext1,
-                                  const RVec<float>& pt2,
-                                  const RVec<float>& eta2,
-                                  const RVec<float>& phi2,
-                                  const RVec<float>& m2,
-                                  const RVec<float>& ext2)
+            [selector, mode, p1, p2](const RVec<float>& pt1,
+                                     const RVec<float>& eta1,
+                                     const RVec<float>& phi1,
+                                     const RVec<float>& m1,
+                                     const RVec<float>& ext1,
+                                     const RVec<float>& pt2,
+                                     const RVec<float>& eta2,
+                                     const RVec<float>& phi2,
+                                     const RVec<float>& m2,
+                                     const RVec<float>& ext2) -> PairCarrierRVec
             {
-                PairCarrier best;
-                best.idx1  = -1;
-                best.idx2  = -1;
-                best.pt    = 0.f;
-                best.eta   = std::numeric_limits<float>::infinity();
-                best.phi   = 0.f;
-                best.mass  = 0.f;
-                best.dr    = std::numeric_limits<float>::infinity();
-                best.deta  = 0.f;
-                best.dphi  = 0.f;
+
+                PairCarrierRVec outv;
+
+                const bool same = (p1 == p2);
+                const size_t n1 = pt1.size();
+                const size_t n2 = pt2.size();
+                if (n1 == 0 || n2 == 0) return outv;
 
                 float bestScore = (mode == MinimizeScore)
                     ? std::numeric_limits<float>::infinity()
                     : -std::numeric_limits<float>::infinity();
-                best.score = bestScore;
 
-                // If the collection prefix is the same then
-                // we flag it so that we don't consider same object pair
-                bool same = (p1 == p2);
+                int bestI = -1;
+                int bestJ = -1;
 
-                // If nothing to consider then return empty
-                const size_t n1 = pt1.size();
-                const size_t n2 = pt2.size();
-                if (n1 == 0 || n2 == 0)
-                    return best;
-
+                // Scan all pairs
                 for (size_t i = 0; i < n1; ++i)
                 {
                     for (size_t j = 0; j < n2; ++j)
                     {
-                        // If same collection we skip when i == j
                         if (same && i == j) continue;
 
                         LV a(pt1[i], eta1[i], phi1[i], m1[i]);
                         LV b(pt2[j], eta2[j], phi2[j], m2[j]);
 
-                        float score = selector(a, b, (int)i, (int)j, ext1[i], ext2[j]);
+                        const float score = selector(a, b, (int)i, (int)j, ext1[i], ext2[j]);
                         if (!std::isfinite(score)) continue;
 
-                        bool take = (mode == MinimizeScore) ? (score < bestScore) : (score > bestScore);
+                        const bool take = (mode == MinimizeScore) ? (score < bestScore) : (score > bestScore);
                         if (!take) continue;
 
                         bestScore = score;
-
-                        best.idx1  = (int)i;
-                        best.idx2  = (int)j;
-                        best.score = score;
-
-                        LV pair = (a + b);
-                        best.pt  = pair.Pt();
-                        best.eta  = pair.Eta();
-                        best.phi  = pair.Phi();
-                        best.mass  = pair.M();
-
-                        best.dr   = ROOT::Math::VectorUtil::DeltaR(a, b);
-                        best.dphi = ROOT::Math::VectorUtil::DeltaPhi(a, b);
-                        best.deta = a.Eta() - b.Eta();
+                        bestI = (int)i;
+                        bestJ = (int)j;
                     }
                 }
 
-                return best;
+                // If we never found a valid pair, keep outputs empty
+                if (bestI < 0 || bestJ < 0) return outv;
+
+                // Fill outputs with a single element
+                {
+                    LV a(pt1[bestI], eta1[bestI], phi1[bestI], m1[bestI]);
+                    LV b(pt2[bestJ], eta2[bestJ], phi2[bestJ], m2[bestJ]);
+                    LV pair = a + b;
+
+                    outv.idx1  = RVec<int>{bestI};
+                    outv.idx2  = RVec<int>{bestJ};
+                    outv.score = RVec<float>{bestScore};
+
+                    outv.pt    = RVec<float>{(float)pair.Pt()};
+                    outv.eta   = RVec<float>{(float)pair.Eta()};
+                    outv.phi   = RVec<float>{(float)pair.Phi()};
+                    outv.mass  = RVec<float>{(float)pair.M()};
+
+                    outv.dr    = RVec<float>{(float)ROOT::Math::VectorUtil::DeltaR(a, b)};
+                    outv.dphi  = RVec<float>{(float)ROOT::Math::VectorUtil::DeltaPhi(a, b)};
+                    outv.deta  = RVec<float>{(float)(a.Eta() - b.Eta())};
+                }
+
+                return outv;
             },
             {p1pt,p1eta,p1phi,p1m,p1ext,p2pt,p2eta,p2phi,p2m,p2ext}
         );
 
-        // Lower case first letter prefix for out collection idx prefix
-        std::string p1low = p1;
-        if (!p1low.empty())
+        const std::string p1low = LowerFirst(p1);
+        const std::string p2low = LowerFirst(p2);
+
+        // Unpack carrier -> final RVec branches
+        df = df.Define(out + "_" + p1low + "Idx1", [](const PairCarrierRVec& c){ return c.idx1;  }, {carrier});
+        df = df.Define(out + "_" + p2low + "Idx2", [](const PairCarrierRVec& c){ return c.idx2;  }, {carrier});
+        df = df.Define(out + "_score",             [](const PairCarrierRVec& c){ return c.score; }, {carrier});
+
+        df = df.Define(out + "_pt",   [](const PairCarrierRVec& c){ return c.pt;   }, {carrier});
+        df = df.Define(out + "_eta",  [](const PairCarrierRVec& c){ return c.eta;  }, {carrier});
+        df = df.Define(out + "_phi",  [](const PairCarrierRVec& c){ return c.phi;  }, {carrier});
+        df = df.Define(out + "_mass", [](const PairCarrierRVec& c){ return c.mass; }, {carrier});
+        df = df.Define(out + "_dr",   [](const PairCarrierRVec& c){ return c.dr;   }, {carrier});
+        df = df.Define(out + "_deta", [](const PairCarrierRVec& c){ return c.deta; }, {carrier});
+        df = df.Define(out + "_dphi", [](const PairCarrierRVec& c){ return c.dphi; }, {carrier});
+
+        // --------------------------------------------------------------------------
+        // Per-object mapping back to the selected pair candidate (size nObj, values -1 or 0)
+        // Name convention: <collection>_<lowerFirst(out)>Idx
+        // Example: GoodLepton_goodZIdx
+        // --------------------------------------------------------------------------
+
+        const std::string outlow = LowerFirst(out);
+        const std::string map1   = p1 + "_" + outlow + "Idx";
+        const std::string map2   = p2 + "_" + outlow + "Idx";
+
+        const std::string idx1col = out + "_" + p1low + "Idx1";
+        const std::string idx2col = out + "_" + p2low + "Idx2";
+
+        if (p1 == p2)
         {
-            p1low[0] = std::tolower(p1low[0]);
-        }
+            // Single mapping vector (e.g. GoodLepton_goodZIdx)
+            df = df.Define(
+                map1,
+                [](const ROOT::VecOps::RVec<float>& obj_pt,
+                   const ROOT::VecOps::RVec<int>&   i1,
+                   const ROOT::VecOps::RVec<int>&   i2) -> ROOT::VecOps::RVec<int>
+                {
+                    using ROOT::VecOps::RVec;
+                    const int n = (int)obj_pt.size();
+                    RVec<int> m(n, -1);
 
-        std::string p2low = p2;
-        if (!p2low.empty())
+                    if (i1.empty() || i2.empty()) return m; // no selected pair
+
+                    const int a = i1[0];
+                    const int b = i2[0];
+
+                    if (0 <= a && a < n) m[a] = 0;
+                    if (0 <= b && b < n) m[b] = 0;
+
+                    return m;
+                },
+                {p1pt, idx1col, idx2col}
+            );
+        }
+        else
         {
-            p2low[0] = std::tolower(p2low[0]);
+            // Two separate mapping vectors
+            df = df.Define(
+                map1,
+                [](const ROOT::VecOps::RVec<float>& obj_pt,
+                   const ROOT::VecOps::RVec<int>&   i1) -> ROOT::VecOps::RVec<int>
+                {
+                    using ROOT::VecOps::RVec;
+                    const int n = (int)obj_pt.size();
+                    RVec<int> m(n, -1);
+
+                    if (i1.empty()) return m;
+                    const int a = i1[0];
+                    if (0 <= a && a < n) m[a] = 0;
+                    return m;
+                },
+                {p1pt, idx1col}
+                );
+
+            df = df.Define(
+                map2,
+                [](const ROOT::VecOps::RVec<float>& obj_pt,
+                   const ROOT::VecOps::RVec<int>&   i2) -> ROOT::VecOps::RVec<int>
+                {
+                    using ROOT::VecOps::RVec;
+                    const int n = (int)obj_pt.size();
+                    RVec<int> m(n, -1);
+
+                    if (i2.empty()) return m;
+                    const int b = i2[0];
+                    if (0 <= b && b < n) m[b] = 0;
+                    return m;
+                },
+                {p2pt, idx2col}
+                );
         }
-
-        df = df.Define(out + "_" + p1low + "Idx1",  [](const PairCarrier& c){ return c.idx1;  }, {carrier});
-        df = df.Define(out + "_" + p2low + "Idx2",  [](const PairCarrier& c){ return c.idx2;  }, {carrier});
-        df = df.Define(out + "_score", [](const PairCarrier& c){ return c.score; }, {carrier});
-
-        df = df.Define(out + "_pt",    [](const PairCarrier& c){ return c.pt;   }, {carrier});
-        df = df.Define(out + "_eta",   [](const PairCarrier& c){ return c.eta;  }, {carrier});
-        df = df.Define(out + "_phi",   [](const PairCarrier& c){ return c.phi;  }, {carrier});
-        df = df.Define(out + "_mass",  [](const PairCarrier& c){ return c.mass; }, {carrier});
-        df = df.Define(out + "_dr",    [](const PairCarrier& c){ return c.dr;   }, {carrier});
-        df = df.Define(out + "_deta",  [](const PairCarrier& c){ return c.deta; }, {carrier});
-        df = df.Define(out + "_dphi",  [](const PairCarrier& c){ return c.dphi; }, {carrier});
 
         return df;
     }
+
 
 
 
@@ -1416,26 +1517,27 @@ namespace RdfUtil
     // ============================================================================
 
 
-    struct TrioCarrier
+    struct TrioCarrierRVec
     {
-        int idx1;
-        int idx2;
-        int idx3;
+        ROOT::VecOps::RVec<int>   idx1;
+        ROOT::VecOps::RVec<int>   idx2;
+        ROOT::VecOps::RVec<int>   idx3;
 
-        float score;
+        ROOT::VecOps::RVec<float> score;
 
-        float pt;
-        float eta;
-        float phi;
-        float mass;
+        ROOT::VecOps::RVec<float> pt;
+        ROOT::VecOps::RVec<float> eta;
+        ROOT::VecOps::RVec<float> phi;
+        ROOT::VecOps::RVec<float> mass;
 
-        float dr12;
-        float dr13;
-        float dr23;
+        ROOT::VecOps::RVec<float> dr12;
+        ROOT::VecOps::RVec<float> dr13;
+        ROOT::VecOps::RVec<float> dr23;
 
-        float minDr;
-        float maxDr;
+        ROOT::VecOps::RVec<float> minDr;
+        ROOT::VecOps::RVec<float> maxDr;
     };
+
 
     using TrioSelectorLV = std::function<float(const LV&, const LV&, const LV&, int, int, int, float, float, float)>;
 
@@ -1497,25 +1599,19 @@ namespace RdfUtil
     }
 
 
-    static std::string LowerFirst(const std::string& s)
+    static RNode TrioCollectionRVec(ROOT::RDF::RNode df,
+                                               const std::string& c1,
+                                               const std::string& c2,
+                                               const std::string& c3,
+                                               const std::string& out,
+                                               TrioSelectorLV selector,
+                                               OptMode mode = MinimizeScore,
+                                               const std::string& ext1 = "",
+                                               const std::string& ext2 = "",
+                                               const std::string& ext3 = "")
     {
-        if (s.empty()) return s;
-        std::string r = s;
-        r[0] = (char)std::tolower((unsigned char)r[0]);
-        return r;
-    }
+        using ROOT::VecOps::RVec;
 
-    static ROOT::RDF::RNode TrioCollection(ROOT::RDF::RNode df,
-                                           const std::string& c1,
-                                           const std::string& c2,
-                                           const std::string& c3,
-                                           const std::string& out,
-                                           TrioSelectorLV selector,
-                                           OptMode mode = MinimizeScore,
-                                           const std::string& ext1="",
-                                           const std::string& ext2="",
-                                           const std::string& ext3="")
-    {
         std::string c1pt  = c1 + "_pt";
         std::string c1eta = c1 + "_eta";
         std::string c1phi = c1 + "_phi";
@@ -1568,10 +1664,11 @@ namespace RdfUtil
             }
         }
 
-        // Missing mass handling with safe reuse when collection names collide
+        // Missing extra handling (NOTE: this fixes the bug in your posted scalar TrioCollection
+        // where "__<cX>_mass0" was used for extra0; here we correctly use "_extra0").
         if (!ColumnExists(df, c1ext))
         {
-            std::string tmp = "__" + c1 + "_mass0";
+            std::string tmp = "__" + c1 + "_extra0";
             if (!ColumnExists(df, tmp))
                 df = df.Define(tmp, [](const RVec<float>& v){ return RVec<float>(v.size(), 0.f); }, {c1pt});
             c1ext = tmp;
@@ -1582,7 +1679,7 @@ namespace RdfUtil
             if (c2 == c1) c2ext = c1ext;
             else
             {
-                std::string tmp = "__" + c2 + "_mass0";
+                std::string tmp = "__" + c2 + "_extra0";
                 if (!ColumnExists(df, tmp))
                     df = df.Define(tmp, [](const RVec<float>& v){ return RVec<float>(v.size(), 0.f); }, {c2pt});
                 c2ext = tmp;
@@ -1595,55 +1692,34 @@ namespace RdfUtil
             else if (c3 == c2) c3ext = c2ext;
             else
             {
-                std::string tmp = "__" + c3 + "_mass0";
+                std::string tmp = "__" + c3 + "_extra0";
                 if (!ColumnExists(df, tmp))
                     df = df.Define(tmp, [](const RVec<float>& v){ return RVec<float>(v.size(), 0.f); }, {c3pt});
                 c3ext = tmp;
             }
         }
 
-        std::string carrier = "__" + out + "_trioCarrier";
+        const std::string carrier = "__" + out + "_trioCarrierRVec";
 
         df = df.Define(
             carrier,
-            [selector,mode,c1,c2,c3](const RVec<float>& pt1,
-                                     const RVec<float>& eta1,
-                                     const RVec<float>& phi1,
-                                     const RVec<float>& m1,
-                                     const RVec<float>& vext1,
-                                     const RVec<float>& pt2,
-                                     const RVec<float>& eta2,
-                                     const RVec<float>& phi2,
-                                     const RVec<float>& m2,
-                                     const RVec<float>& vext2,
-                                     const RVec<float>& pt3,
-                                     const RVec<float>& eta3,
-                                     const RVec<float>& phi3,
-                                     const RVec<float>& m3,
-                                     const RVec<float>& vext3)
+            [selector, mode, c1, c2, c3](const RVec<float>& pt1,
+                                         const RVec<float>& eta1,
+                                         const RVec<float>& phi1,
+                                         const RVec<float>& m1,
+                                         const RVec<float>& ext1v,
+                                         const RVec<float>& pt2,
+                                         const RVec<float>& eta2,
+                                         const RVec<float>& phi2,
+                                         const RVec<float>& m2,
+                                         const RVec<float>& ext2v,
+                                         const RVec<float>& pt3,
+                                         const RVec<float>& eta3,
+                                         const RVec<float>& phi3,
+                                         const RVec<float>& m3,
+                                         const RVec<float>& ext3v) -> TrioCarrierRVec
             {
-                TrioCarrier best;
-                best.idx1 = -1;
-                best.idx2 = -1;
-                best.idx3 = -1;
-
-                float bestScore = (mode == MinimizeScore)
-                    ? std::numeric_limits<float>::infinity()
-                    : -std::numeric_limits<float>::infinity();
-
-                best.score = bestScore;
-
-                best.pt = 0.f;
-                best.eta = std::numeric_limits<float>::infinity();
-                best.phi = 0.f;
-                best.mass = 0.f;
-
-                best.dr12 = std::numeric_limits<float>::infinity();
-                best.dr13 = std::numeric_limits<float>::infinity();
-                best.dr23 = std::numeric_limits<float>::infinity();
-
-                best.minDr = std::numeric_limits<float>::infinity();
-                best.maxDr = 0.f;
+                TrioCarrierRVec outv; // empty => no trio
 
                 const bool same12 = (c1 == c2);
                 const bool same13 = (c1 == c3);
@@ -1652,15 +1728,22 @@ namespace RdfUtil
                 const size_t n1 = pt1.size();
                 const size_t n2 = pt2.size();
                 const size_t n3 = pt3.size();
-                if (n1 == 0 || n2 == 0 || n3 == 0) return best;
+                if (n1 == 0 || n2 == 0 || n3 == 0) return outv;
+
+                float bestScore = (mode == MinimizeScore)
+                    ? std::numeric_limits<float>::infinity()
+                    : -std::numeric_limits<float>::infinity();
+
+                int bestI = -1, bestJ = -1, bestK = -1;
 
                 for (size_t i = 0; i < n1; ++i)
                 {
                     for (size_t j = 0; j < n2; ++j)
                     {
+                        if (same12 && i == j) continue;
+
                         for (size_t k = 0; k < n3; ++k)
                         {
-                            if (same12 && i == j) continue;
                             if (same13 && i == k) continue;
                             if (same23 && j == k) continue;
 
@@ -1668,72 +1751,178 @@ namespace RdfUtil
                             LV b(pt2[j], eta2[j], phi2[j], m2[j]);
                             LV c(pt3[k], eta3[k], phi3[k], m3[k]);
 
-                            float score = selector(a, b, c, (int)i, (int)j, (int)k, vext1[i], vext2[j], vext3[k]);
+                            const float score = selector(a, b, c,
+                                                         (int)i, (int)j, (int)k,
+                                                         ext1v[i], ext2v[j], ext3v[k]);
                             if (!std::isfinite(score)) continue;
 
-                            bool take = (mode == MinimizeScore) ? (score < bestScore) : (score > bestScore);
+                            const bool take = (mode == MinimizeScore) ? (score < bestScore) : (score > bestScore);
                             if (!take) continue;
 
                             bestScore = score;
-
-                            best.idx1 = (int)i;
-                            best.idx2 = (int)j;
-                            best.idx3 = (int)k;
-
-                            best.score = score;
-
-                            LV trio = (a + b + c);
-                            best.pt = (float)trio.Pt();
-                            best.eta = (float)trio.Eta();
-                            best.phi = (float)trio.Phi();
-                            best.mass = (float)trio.M();
-
-                            const double dr12 = ROOT::Math::VectorUtil::DeltaR(a, b);
-                            const double dr13 = ROOT::Math::VectorUtil::DeltaR(a, c);
-                            const double dr23 = ROOT::Math::VectorUtil::DeltaR(b, c);
-
-                            best.dr12 = (float)dr12;
-                            best.dr13 = (float)dr13;
-                            best.dr23 = (float)dr23;
-
-                            const float minDr = (float)std::min(dr12, std::min(dr13, dr23));
-                            const float maxDr = (float)std::max(dr12, std::max(dr13, dr23));
-
-                            best.minDr = minDr;
-                            best.maxDr = maxDr;
+                            bestI = (int)i;
+                            bestJ = (int)j;
+                            bestK = (int)k;
                         }
                     }
                 }
 
-                return best;
+                if (bestI < 0 || bestJ < 0 || bestK < 0) return outv;
+
+                LV a(pt1[bestI], eta1[bestI], phi1[bestI], m1[bestI]);
+                LV b(pt2[bestJ], eta2[bestJ], phi2[bestJ], m2[bestJ]);
+                LV c(pt3[bestK], eta3[bestK], phi3[bestK], m3[bestK]);
+
+                LV trio = a + b + c;
+
+                const double dr12 = ROOT::Math::VectorUtil::DeltaR(a, b);
+                const double dr13 = ROOT::Math::VectorUtil::DeltaR(a, c);
+                const double dr23 = ROOT::Math::VectorUtil::DeltaR(b, c);
+
+                const float minDr = (float)std::min(dr12, std::min(dr13, dr23));
+                const float maxDr = (float)std::max(dr12, std::max(dr13, dr23));
+
+                outv.idx1  = RVec<int>{bestI};
+                outv.idx2  = RVec<int>{bestJ};
+                outv.idx3  = RVec<int>{bestK};
+
+                outv.score = RVec<float>{bestScore};
+
+                outv.pt    = RVec<float>{(float)trio.Pt()};
+                outv.eta   = RVec<float>{(float)trio.Eta()};
+                outv.phi   = RVec<float>{(float)trio.Phi()};
+                outv.mass  = RVec<float>{(float)trio.M()};
+
+                outv.dr12  = RVec<float>{(float)dr12};
+                outv.dr13  = RVec<float>{(float)dr13};
+                outv.dr23  = RVec<float>{(float)dr23};
+
+                outv.minDr = RVec<float>{minDr};
+                outv.maxDr = RVec<float>{maxDr};
+
+                return outv;
             },
-            {c1pt,c1eta,c1phi,c1m,c1ext,c2pt,c2eta,c2phi,c2m,c2ext,c3pt,c3eta,c3phi,c3m,c3ext}
+            {c1pt,c1eta,c1phi,c1m,c1ext,
+                c2pt,c2eta,c2phi,c2m,c2ext,
+                c3pt,c3eta,c3phi,c3m,c3ext}
         );
 
-        std::string c1low = LowerFirst(c1);
-        std::string c2low = LowerFirst(c2);
-        std::string c3low = LowerFirst(c3);
+        const std::string c1low = LowerFirst(c1);
+        const std::string c2low = LowerFirst(c2);
+        const std::string c3low = LowerFirst(c3);
 
-        df = df.Define(out + "_" + c1low + "Idx1", [](const TrioCarrier& t){ return t.idx1; }, {carrier});
-        df = df.Define(out + "_" + c2low + "Idx2", [](const TrioCarrier& t){ return t.idx2; }, {carrier});
-        df = df.Define(out + "_" + c3low + "Idx3", [](const TrioCarrier& t){ return t.idx3; }, {carrier});
+        df = df.Define(out + "_" + c1low + "Idx1", [](const TrioCarrierRVec& t) -> RVec<int>   { return t.idx1; }, {carrier});
+        df = df.Define(out + "_" + c2low + "Idx2", [](const TrioCarrierRVec& t) -> RVec<int>   { return t.idx2; }, {carrier});
+        df = df.Define(out + "_" + c3low + "Idx3", [](const TrioCarrierRVec& t) -> RVec<int>   { return t.idx3; }, {carrier});
 
-        df = df.Define(out + "_score", [](const TrioCarrier& t){ return t.score; }, {carrier});
+        df = df.Define(out + "_score", [](const TrioCarrierRVec& t) -> RVec<float> { return t.score; }, {carrier});
 
-        df = df.Define(out + "_pt",    [](const TrioCarrier& t){ return t.pt;   }, {carrier});
-        df = df.Define(out + "_eta",   [](const TrioCarrier& t){ return t.eta;  }, {carrier});
-        df = df.Define(out + "_phi",   [](const TrioCarrier& t){ return t.phi;  }, {carrier});
-        df = df.Define(out + "_mass",  [](const TrioCarrier& t){ return t.mass; }, {carrier});
+        df = df.Define(out + "_pt",   [](const TrioCarrierRVec& t) -> RVec<float> { return t.pt;   }, {carrier});
+        df = df.Define(out + "_eta",  [](const TrioCarrierRVec& t) -> RVec<float> { return t.eta;  }, {carrier});
+        df = df.Define(out + "_phi",  [](const TrioCarrierRVec& t) -> RVec<float> { return t.phi;  }, {carrier});
+        df = df.Define(out + "_mass", [](const TrioCarrierRVec& t) -> RVec<float> { return t.mass; }, {carrier});
 
-        df = df.Define(out + "_dr12",  [](const TrioCarrier& t){ return t.dr12; }, {carrier});
-        df = df.Define(out + "_dr13",  [](const TrioCarrier& t){ return t.dr13; }, {carrier});
-        df = df.Define(out + "_dr23",  [](const TrioCarrier& t){ return t.dr23; }, {carrier});
+        df = df.Define(out + "_dr12", [](const TrioCarrierRVec& t) -> RVec<float> { return t.dr12; }, {carrier});
+        df = df.Define(out + "_dr13", [](const TrioCarrierRVec& t) -> RVec<float> { return t.dr13; }, {carrier});
+        df = df.Define(out + "_dr23", [](const TrioCarrierRVec& t) -> RVec<float> { return t.dr23; }, {carrier});
 
-        df = df.Define(out + "_minDr", [](const TrioCarrier& t){ return t.minDr; }, {carrier});
-        df = df.Define(out + "_maxDr", [](const TrioCarrier& t){ return t.maxDr; }, {carrier});
+        df = df.Define(out + "_minDr", [](const TrioCarrierRVec& t) -> RVec<float> { return t.minDr; }, {carrier});
+        df = df.Define(out + "_maxDr", [](const TrioCarrierRVec& t) -> RVec<float> { return t.maxDr; }, {carrier});
+
+        // --------------------------------------------------------------------------
+        // Per-object mapping back to the selected trio candidate (size nObj, values -1 or 0)
+        // Name convention: <collection>_<lowerFirst(out)>Idx
+        // Example: GoodJet_goodTopIdx (if out="GoodTop")
+        // --------------------------------------------------------------------------
+
+        const std::string outlow = LowerFirst(out);
+
+        const std::string map1 = c1 + "_" + outlow + "Idx";
+        const std::string map2 = c2 + "_" + outlow + "Idx";
+        const std::string map3 = c3 + "_" + outlow + "Idx";
+
+        const std::string idx1col = out + "_" + c1low + "Idx1";
+        const std::string idx2col = out + "_" + c2low + "Idx2";
+        const std::string idx3col = out + "_" + c3low + "Idx3";
+
+        // Helper: define a mapping for a given collection, possibly receiving multiple picked indices
+        auto defineMap = [&](const std::string& mapName,
+                             const std::string& ptCol,
+                             const std::vector<std::string>& pickedIdxCols)
+        {
+            df = df.Define(
+                mapName,
+                [](const ROOT::VecOps::RVec<float>& obj_pt,
+                   const ROOT::VecOps::RVec<int>&   a,
+                   const ROOT::VecOps::RVec<int>&   b,
+                   const ROOT::VecOps::RVec<int>&   c) -> ROOT::VecOps::RVec<int>
+                {
+                    using ROOT::VecOps::RVec;
+                    const int n = (int)obj_pt.size();
+                    RVec<int> m(n, -1);
+
+                    // If no trio selected, all three are empty; return default.
+                    // We treat "a" as the gate: if empty => no selection.
+                    if (a.empty()) return m;
+
+                    auto setIfValid = [&](const RVec<int>& v){
+                        if (v.empty()) return;
+                        const int i = v[0];
+                        if (0 <= i && i < n) m[i] = 0;
+                    };
+
+                    setIfValid(a);
+                    setIfValid(b);
+                    setIfValid(c);
+
+                    return m;
+                },
+                // We will bind three idx vectors even if some are "dummy" (see below).
+                {ptCol, pickedIdxCols[0], pickedIdxCols[1], pickedIdxCols[2]}
+            );
+        };
+
+        // We need to avoid duplicate branch definitions when collections are identical.
+        // Strategy: for each distinct collection prefix among {c1,c2,c3}, define one map,
+        // and feed it the relevant chosen indices (some may be duplicates).
+
+        if (c1 == c2 && c2 == c3)
+        {
+            // One collection: mark all three indices in the same map
+            defineMap(map1, c1pt, {idx1col, idx2col, idx3col});
+        }
+        else
+        {
+            // c1 map
+            if (!(c1 == c2 || c1 == c3))
+                defineMap(map1, c1pt, {idx1col, idx1col, idx1col}); // only idx1 relevant
+            else
+            {
+                // c1 shares with others: include whichever indices correspond to that same collection
+                // If c1==c2, idx2col is also into c1; if c1==c3, idx3col is also into c1.
+                const std::string bcol = (c1 == c2) ? idx2col : idx1col;
+                const std::string ccol = (c1 == c3) ? idx3col : idx1col;
+                defineMap(map1, c1pt, {idx1col, bcol, ccol});
+            }
+
+            // c2 map (only if distinct from c1)
+            if (c2 != c1)
+            {
+                if (c2 != c3)
+                    defineMap(map2, c2pt, {idx2col, idx2col, idx2col});
+                else
+                    defineMap(map2, c2pt, {idx2col, idx3col, idx2col}); // c2==c3
+            }
+
+            // c3 map (only if distinct from c1 and c2)
+            if (c3 != c1 && c3 != c2)
+                defineMap(map3, c3pt, {idx3col, idx3col, idx3col});
+        }
 
         return df;
     }
+
+
 
 
 }
