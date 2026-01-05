@@ -8,70 +8,76 @@ int main(int argc, char** argv)
     // std::vector<std::string> files = {"/blue/avery/p.chang/nanoaod/mc/RunIISummer20UL18NanoAODv9/WWZJetsTo4L2Nu_4F_TuneCP5_13TeV-amcatnlo-pythia8/NANOAODSIM/106X_upgrade2018_realistic_v16_L1v1-v2/40000/8718B61F-4D6B-6B4C-AA07-A29ADBDC7FD8.root"};
     // std::vector<std::string> files = {"/blue/avery/p.chang/nanoaod/mc/RunIISummer20UL18NanoAODv9/TTZToLL_TuneCP5_13TeV_amcatnlo-pythia8/NANOAODSIM/106X_upgrade2018_realistic_v16_L1v1-v3/2830000/91815FD7-FD43-7444-92BB-D0CB29A30212.root"};
     // std::vector<std::string> files = {"/blue/avery/p.chang/nanoaod/data/Run2018D/DoubleMuon/NANOAOD/UL2018_MiniAODv2_NanoAODv9-v2/2430000/8BC1280C-A72D-1B4A-BE4D-9BFDA7E4C862.root"};
-    std::vector<std::string> files =
-    {
-        "/blue/avery/p.chang/nanoaod/mc/RunIISummer20UL18NanoAODv9/GluGluHToZZTo4L_M125_TuneCP5_13TeV_powheg2_JHUGenV7011_pythia8/NANOAODSIM/106X_upgrade2018_realistic_v16_L1v1-v1/120000/3ED05633-EBB7-4A44-8F9D-CD956490BCFD.root",
-        // "/blue/avery/p.chang/nanoaod/mc/RunIISummer20UL18NanoAODv9/TTZToLL_TuneCP5_13TeV_amcatnlo-pythia8/NANOAODSIM/106X_upgrade2018_realistic_v16_L1v1-v3/2830000/91815FD7-FD43-7444-92BB-D0CB29A30212.root",
-        // "/blue/avery/p.chang/nanoaod/data/Run2018D/DoubleMuon/NANOAOD/UL2018_MiniAODv2_NanoAODv9-v2/2430000/8BC1280C-A72D-1B4A-BE4D-9BFDA7E4C862.root",
-    };
+    // std::vector<std::string> files =
+    // {
+    //     // "/blue/avery/p.chang/nanoaod/mc/RunIISummer20UL18NanoAODv9/TTZToLL_TuneCP5_13TeV_amcatnlo-pythia8/NANOAODSIM/106X_upgrade2018_realistic_v16_L1v1-v3/2830000/91815FD7-FD43-7444-92BB-D0CB29A30212.root",
+    //     // "/blue/avery/p.chang/nanoaod/mc/RunIISummer20UL18NanoAODv9/GluGluHToZZTo4L_M125_TuneCP5_13TeV_powheg2_JHUGenV7011_pythia8/NANOAODSIM/106X_upgrade2018_realistic_v16_L1v1-v1/120000/3ED05633-EBB7-4A44-8F9D-CD956490BCFD.root",
+    //     // "/blue/avery/p.chang/nanoaod/mc/RunIISummer20UL18NanoAODv9/TTZToLL_TuneCP5_13TeV_amcatnlo-pythia8/NANOAODSIM/106X_upgrade2018_realistic_v16_L1v1-v3/2830000/91815FD7-FD43-7444-92BB-D0CB29A30212.root",
+    //     // "/blue/avery/p.chang/nanoaod/data/Run2018D/DoubleMuon/NANOAOD/UL2018_MiniAODv2_NanoAODv9-v2/2430000/8BC1280C-A72D-1B4A-BE4D-9BFDA7E4C862.root",
+    //     "/blue/avery/p.chang/nanoaod/data/Run2018D/DoubleMuon/NANOAOD/UL2018_MiniAODv2_NanoAODv9-v2/2430000/*.root",
+    // };
+
+    std::vector<std::string> files = RdfUtil::CollectRootFiles("/blue/avery/p.chang/nanoaod/data/Run2018D/DoubleMuon/NANOAOD/UL2018_MiniAODv2_NanoAODv9-v2/2430000/");
+
+    const bool isDataJob = RdfUtil::IsDataFromFirstFile(files.at(0));
 
     // Open the files into a RDataFrame
     RDataFrame rdf("Events", files);
 
     // Define a root node (all events with no filters and no modification)
-    RNode root = rdf;
+    RNode df = rdf;
 
-    // auto df2 = root.DefinePerSample("FileTag",
-    //                               [](unsigned int slot, const ROOT::RDF::RSampleInfo& si) {
-    //                                   return si.AsString();
-    //                               });
+    ROOT::RDF::Experimental::AddProgressBar(rdf);
 
-    // df2.Display({"FileTag"}, 10)->Print();
+    RdfUtil::PrintSampleMetaDataRegistry("samples.csv");
+    df = RdfUtil::BuildSampleMetaData(df, "samples.csv");
 
     // Select objects 
-    RNode object_selections = root.Define("Muon_anaLooseID", muon_2018LooseID, muon_2018LooseID_inputs)
-                                  .Define("Electron_anaLooseID", elec_2018LooseID, elec_2018LooseID_inputs)
-                                  .Define("Jet_anaLooseID", jet_2018ID, jet_2018ID_inputs)
-                                  .Define("GenPart_save", gen_mask, gen_mask_inputs)
-                                  .Define("GenPart_lepOrigin", lep_origin_mask, lep_origin_mask_inputs)
-                                  ;
+    df = df.Define("Muon_anaID", muon_2018ID, muon_2018ID_inputs)
+           .Define("Electron_anaID", elec_2018ID, elec_2018ID_inputs)
+           .Define("Jet_anaLooseID", jet_2018ID, jet_2018ID_inputs)
+           ;
 
     // Create branches based on selected objects
-    RNode collection_building = object_selections;
-    collection_building = RdfUtil::TrimCollection(collection_building, "Muon"     , "Muon_anaLooseID"     , "GoodMuon"     , Muon_properties);
-    collection_building = RdfUtil::TrimCollection(collection_building, "Electron" , "Electron_anaLooseID" , "GoodElectron" , Electron_properties);
-    collection_building = RdfUtil::TrimCollection(collection_building, "Jet"      , "Jet_anaLooseID"      , "PreORGoodJet" , Jet_properties);
-    collection_building = RdfUtil::TrimCollection(collection_building, "GenPart"  , "GenPart_save"        , "GoodGenPart"  , GenPart_properties);
-    collection_building = RdfUtil::TrimCollection(collection_building, "GenPart"  , "GenPart_status==1&&(abs(GenPart_pdgId)==11||abs(GenPart_pdgId)==13)", "GoodGenLep", GenPart_properties);
-    collection_building = RdfUtil::MergeCollections(collection_building, "GoodMuon", "GoodElectron", "GoodLepton");
-    collection_building = RdfUtil::TrimCollectionByDeltaR(collection_building, "PreORGoodJet", "GoodLepton", "GoodJet", Jet_properties, 0.4f);
-    collection_building = RdfUtil::MatchCollection(collection_building, "GoodLepton", "GoodGenLep", 0.1f);
+    df = RdfUtil::TrimCollection(df, "Muon"     , "Muon_anaID>=1"     , "GoodLooseMuon"     , Muon_properties);
+    df = RdfUtil::TrimCollection(df, "Electron" , "Electron_anaID>=1" , "GoodLooseElectron" , Electron_properties);
+    df = RdfUtil::TrimCollection(df, "Muon"     , "Muon_anaID>=2"     , "GoodMuon"     , Muon_properties);
+    df = RdfUtil::TrimCollection(df, "Electron" , "Electron_anaID>=2" , "GoodElectron" , Electron_properties);
+    df = RdfUtil::TrimCollection(df, "Jet"      , "Jet_anaLooseID"      , "PreORGoodJet" , Jet_properties);
+    df = RdfUtil::MergeCollections(df, "GoodMuon", "GoodElectron", "GoodLepton");
+    df = RdfUtil::TrimCollectionByDeltaR(df, "PreORGoodJet", "GoodLepton", "GoodJet", Jet_properties, 0.4f);
 
-    RNode nlep4 = collection_building.Filter("nGoodLepton==4", "N_{lep}=4");
+    df = df.Filter("nGoodLepton==4", "N_{lep}=4");
+    df = RdfUtil::PairCollection(df, "GoodLepton", "GoodLepton", "GoodZ", RdfUtil::selAbsMassDiff(91.1876), RdfUtil::MinimizeScore);
+    df = RdfUtil::TrimCollection(df, "GoodLepton", "GoodLepton_goodZIdx<0", "GoodLepNoZ", GoodLepton_properties);
+    df = RdfUtil::PairCollection(df, "GoodLepNoZ", "GoodLepNoZ", "GoodZ2", RdfUtil::selAbsMassDiff(91.1876), RdfUtil::MinimizeScore);
+    df = RdfUtil::PairCollection(df, "GoodZ", "GoodZ2", "GoodH", RdfUtil::selAbsMassDiff(125), RdfUtil::MinimizeScore);
 
-    nlep4 = RdfUtil::PairCollection(nlep4, "GoodLepton", "GoodLepton", "GoodZ", RdfUtil::selAbsMassDiff(91.1876), RdfUtil::MinimizeScore);
-    nlep4 = RdfUtil::TrimCollection(nlep4, "GoodLepton", "GoodLepton_goodZIdx<0", "GoodLepNoZ", GoodLepton_properties);
-    nlep4 = RdfUtil::PairCollection(nlep4, "GoodLepNoZ", "GoodLepNoZ", "GoodZ2", RdfUtil::selAbsMassDiff(91.1876), RdfUtil::MinimizeScore);
-    nlep4 = RdfUtil::PairCollection(nlep4, "GoodZ", "GoodZ2", "GoodH", RdfUtil::selAbsMassDiff(125), RdfUtil::MinimizeScore);
+    if (not isDataJob)
+    {
+        df = df.Define("GenPart_save", gen_mask, gen_mask_inputs)
+               .Define("GenPart_lepOrigin", lep_origin_mask, lep_origin_mask_inputs)
+               ;
+        df = RdfUtil::TrimCollection(df, "GenPart"  , "GenPart_save"        , "GoodGenPart"  , GenPart_properties);
+        df = RdfUtil::TrimCollection(df, "GenPart"  , "GenPart_status==1&&(abs(GenPart_pdgId)==11||abs(GenPart_pdgId)==13)", "GoodGenLep", GenPart_properties);
+        df = RdfUtil::MatchCollection(df, "GoodLepton", "GoodGenLep", 0.1f);
+        df = RdfUtil::PairCollection(df, "GoodGenLep", "GoodGenLep", "GoodGenZ", RdfUtil::selAbsMassDiff(91.1876), RdfUtil::MinimizeScore);
+        df = RdfUtil::TrimCollection(df, "GoodGenLep", "GoodGenLep_goodGenZIdx<0", "GoodGenLepNoZ", GenPart_properties);
+        df = RdfUtil::PairCollection(df, "GoodGenLepNoZ", "GoodGenLepNoZ", "GoodGenZ2", RdfUtil::selAbsMassDiff(91.1876), RdfUtil::MinimizeScore);
+        df = RdfUtil::PairCollection(df, "GoodGenZ", "GoodGenZ2", "GoodGenH", RdfUtil::selAbsMassDiff(125), RdfUtil::MinimizeScore);
+    }
 
-    nlep4 = RdfUtil::PairCollection(nlep4, "GoodGenLep", "GoodGenLep", "GoodGenZ", RdfUtil::selAbsMassDiff(91.1876), RdfUtil::MinimizeScore);
-    nlep4 = RdfUtil::TrimCollection(nlep4, "GoodGenLep", "GoodGenLep_goodGenZIdx<0", "GoodGenLepNoZ", GenPart_properties);
-    nlep4 = RdfUtil::PairCollection(nlep4, "GoodGenLepNoZ", "GoodGenLepNoZ", "GoodGenZ2", RdfUtil::selAbsMassDiff(91.1876), RdfUtil::MinimizeScore);
-    nlep4 = RdfUtil::PairCollection(nlep4, "GoodGenZ", "GoodGenZ2", "GoodGenH", RdfUtil::selAbsMassDiff(125), RdfUtil::MinimizeScore);
-
-    // collection_building = RdfUtil::TrioCollection(collection_building, "GoodJet", "GoodJet", "GoodJet", "GoodTop", RdfUtil::selTrioAbsMassDiff(172.5), RdfUtil::MinimizeScore);
+    // df = RdfUtil::TrioCollection(df, "GoodJet", "GoodJet", "GoodJet", "GoodTop", RdfUtil::selTrioAbsMassDiff(172.5), RdfUtil::MinimizeScore);
 
     // Print
-    // (*collection_building.Display({"GoodLepton_goodGenLepIdx", "GoodLepton_pt", "GoodGenLep_lepOrigin", "GoodGenLep_pt"}, 23, 200)).Print();
-    // (*collection_building.Display({"GoodLepton_eta", "GoodLepton_phi", "GoodGenLep_eta", "GoodGenLep_phi", "GoodGenLep_pdgId", "GoodGenLep_pt"}, 23, 200)).Print();
-    // (*collection_building.Display({"GoodTop_goodJetIdx1", "GoodTop_goodJetIdx2", "GoodTop_goodJetIdx3"}, 23, 200)).Print();
-    // (*nlep4.Display({"GoodZ_goodLeptonIdx1", "GoodZ_goodLeptonIdx2", "GoodLepton_goodGenLepIdx", "GoodGenLep_lepOrigin"}, 23, 200)).Print();
-    // (*nlep4.Display({"GoodZ_goodLeptonIdx1", "GoodZ_goodLeptonIdx2", "GoodLepton_goodGenLepIdx", "GoodGenLep_lepOrigin"}, 23, 200)).Print();
+    // (*df.Display({"GoodLepton_goodGenLepIdx", "GoodLepton_pt", "GoodGenLep_lepOrigin", "GoodGenLep_pt"}, 23, 200)).Print();
+    // (*df.Display({"GoodLepton_eta", "GoodLepton_phi", "GoodGenLep_eta", "GoodGenLep_phi", "GoodGenLep_pdgId", "GoodGenLep_pt"}, 23, 200)).Print();
+    // (*df.Display({"GoodTop_goodJetIdx1", "GoodTop_goodJetIdx2", "GoodTop_goodJetIdx3"}, 23, 200)).Print();
+    // (*df.Display({"GoodZ_goodLeptonIdx1", "GoodZ_goodLeptonIdx2", "GoodLepton_goodGenLepIdx", "GoodGenLep_lepOrigin"}, 23, 200)).Print();
+    // (*df.Display({"GoodZ_goodLeptonIdx1", "GoodZ_goodLeptonIdx2", "GoodLepton_goodGenLepIdx", "GoodGenLep_lepOrigin"}, 23, 200)).Print();
 
     // Output
-    auto cols_to_write = RdfUtil::SelectColumnNames(nlep4, {"Good*", "nGood*"});
-    nlep4.Snapshot("Events", "out.root", cols_to_write);
-    // RNode small = nlep4.Range(23);
-    // small.Snapshot("Events", "out.root", cols_to_write);
+    auto cols_to_write = RdfUtil::SelectColumnNames(df, {"Good*", "nGood*", "Sample*", "Electron*", "Muon*"});
+    df.Snapshot("Events", "out.root", cols_to_write);
 
 }
