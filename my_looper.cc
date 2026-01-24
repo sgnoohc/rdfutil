@@ -17,20 +17,21 @@ int main(int argc, char** argv)
     //     "/blue/avery/p.chang/nanoaod/data/Run2018D/DoubleMuon/NANOAOD/UL2018_MiniAODv2_NanoAODv9-v2/2430000/*.root",
     // };
 
-    std::vector<std::string> files = RdfUtil::CollectRootFiles("/blue/avery/p.chang/nanoaod/data/Run2018D/DoubleMuon/NANOAOD/UL2018_MiniAODv2_NanoAODv9-v2/2430000/");
+    ROOT::EnableImplicitMT(8);
+    ROOT::DisableImplicitMT(); // or just don't EnableImplicitMT()
+    // ROOT::EnableThreadSafety();
 
-    const bool isDataJob = RdfUtil::IsDataFromFirstFile(files.at(0));
+    const bool isDataJob = true;
 
-    // Open the files into a RDataFrame
-    RDataFrame rdf("Events", files);
+    // auto spec = ROOT::Internal::RDF::RetrieveSpecFromJson("samples.json");
+    // RDataFrame rdf(spec);
+
+    RDataFrame rdf("Events", "root://cmsio2.rc.ufl.edu//store/data/Run2018B/DoubleMuon/NANOAOD/UL2018_MiniAODv2_NanoAODv9-v1/270000/098ABF75-8D93-1B45-84A1-981613A831E7.root");
 
     // Define a root node (all events with no filters and no modification)
     RNode df = rdf;
 
-    ROOT::RDF::Experimental::AddProgressBar(rdf);
-
-    RdfUtil::PrintSampleMetaDataRegistry("samples.csv");
-    df = RdfUtil::BuildSampleMetaData(df, "samples.csv");
+    ROOT::RDF::Experimental::AddProgressBar(df);
 
     // Select objects 
     df = df.Define("Muon_anaID", muon_2018ID, muon_2018ID_inputs)
@@ -67,17 +68,10 @@ int main(int argc, char** argv)
         df = RdfUtil::PairCollection(df, "GoodGenZ", "GoodGenZ2", "GoodGenH", RdfUtil::selAbsMassDiff(125), RdfUtil::MinimizeScore);
     }
 
-    // df = RdfUtil::TrioCollection(df, "GoodJet", "GoodJet", "GoodJet", "GoodTop", RdfUtil::selTrioAbsMassDiff(172.5), RdfUtil::MinimizeScore);
-
-    // Print
-    // (*df.Display({"GoodLepton_goodGenLepIdx", "GoodLepton_pt", "GoodGenLep_lepOrigin", "GoodGenLep_pt"}, 23, 200)).Print();
-    // (*df.Display({"GoodLepton_eta", "GoodLepton_phi", "GoodGenLep_eta", "GoodGenLep_phi", "GoodGenLep_pdgId", "GoodGenLep_pt"}, 23, 200)).Print();
-    // (*df.Display({"GoodTop_goodJetIdx1", "GoodTop_goodJetIdx2", "GoodTop_goodJetIdx3"}, 23, 200)).Print();
-    // (*df.Display({"GoodZ_goodLeptonIdx1", "GoodZ_goodLeptonIdx2", "GoodLepton_goodGenLepIdx", "GoodGenLep_lepOrigin"}, 23, 200)).Print();
-    // (*df.Display({"GoodZ_goodLeptonIdx1", "GoodZ_goodLeptonIdx2", "GoodLepton_goodGenLepIdx", "GoodGenLep_lepOrigin"}, 23, 200)).Print();
-
     // Output
-    auto cols_to_write = RdfUtil::SelectColumnNames(df, {"Good*", "nGood*", "Sample*", "Electron*", "Muon*"});
+    auto cols_to_write = RdfUtil::SelectColumnNames(df, {"Good*", "nGood*", "Electron*", "Muon*"});
     df.Snapshot("Events", "out.root", cols_to_write);
+
+    return 0;
 
 }

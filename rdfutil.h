@@ -3,6 +3,7 @@
 #include <ROOT/RVec.hxx>
 #include <ROOT/RDF/RSampleInfo.hxx>
 #include <ROOT/RDFHelpers.hxx>
+#include <ROOT/RDF/Utils.hxx>
 #include <ROOT/RLogger.hxx>
 using ROOT::RDataFrame;
 using ROOT::RDF::RNode;
@@ -33,43 +34,6 @@ using LV = ROOT::Math::PtEtaPhiMVector;
 namespace fs = std::filesystem;
 
 // ============================================================================
-// Electron 2018 Loose Identification
-// ============================================================================
-auto elec_2018LooseID = [](const RVec<float>& Electron_pt,
-                           const RVec<float>& Electron_eta,
-                           const RVec<float>& Electron_deltaEtaSC,
-                           const RVec<float>& Electron_dxy,
-                           const RVec<float>& Electron_dz,
-                           const RVec<float>& Electron_sip3d,
-                           const RVec<float>& Electron_miniPFRelIso_all)
-{
-    const auto n = Electron_pt.size();
-    RVec<bool> pass(n, 0);
-    for (size_t i = 0; i < n; ++i)
-    {
-        if (not (std::fabs(Electron_eta[i] + Electron_deltaEtaSC[i]) < 2.5f)) continue;
-        if (not (Electron_pt[i] > 10.0f)) continue;
-        if (not (std::fabs(Electron_dxy[i]) < 0.05f)) continue;
-        if (not (std::fabs(Electron_dz[i]) < 0.1f)) continue;
-        if (not (std::fabs(Electron_sip3d[i]) < 8.0f)) continue;
-        if (not (Electron_miniPFRelIso_all[i] < 0.4f)) continue;
-        pass[i] = 1;
-    }
-    return pass;
-};
-
-std::vector<std::string> elec_2018LooseID_inputs =
-{
-    "Electron_pt",
-    "Electron_eta",
-    "Electron_deltaEtaSC",
-    "Electron_dxy",
-    "Electron_dz",
-    "Electron_sip3d",
-    "Electron_miniPFRelIso_all"
-};
-
-// ============================================================================
 // Electron 2018 Identification
 // ============================================================================
 auto elec_2018ID = [](const RVec<float>& Electron_pt,
@@ -78,17 +42,17 @@ auto elec_2018ID = [](const RVec<float>& Electron_pt,
                            const RVec<float>& Electron_dxy,
                            const RVec<float>& Electron_dz,
                            const RVec<float>& Electron_sip3d,
-                           const RVec<float>& Electron_lostHits,
-                           const RVec<float>& Electron_convVeto,
-                           const RVec<float>& Electron_tightCharge,
+                           const RVec<unsigned char>& Electron_lostHits,
+                           const RVec<bool>& Electron_convVeto,
+                           const RVec<int>& Electron_tightCharge,
                            const RVec<float>& Electron_miniPFRelIso_all,
                            const RVec<float>& Electron_pfRelIso03_all,
-                           const RVec<float>& Electron_mvaFall17V2noIso_WP80,
-                           const RVec<float>& Electron_mvaFall17V2noIso_WP90,
-                           const RVec<float>& Electron_mvaFall17V2noIso_WPL,
-                           const RVec<float>& Electron_mvaFall17V2Iso_WP80,
-                           const RVec<float>& Electron_mvaFall17V2Iso_WP90,
-                           const RVec<float>& Electron_mvaFall17V2Iso_WPL)
+                           const RVec<bool>& Electron_mvaFall17V2noIso_WP80,
+                           const RVec<bool>& Electron_mvaFall17V2noIso_WP90,
+                           const RVec<bool>& Electron_mvaFall17V2noIso_WPL,
+                           const RVec<bool>& Electron_mvaFall17V2Iso_WP80,
+                           const RVec<bool>& Electron_mvaFall17V2Iso_WP90,
+                           const RVec<bool>& Electron_mvaFall17V2Iso_WPL)
 {
     const auto n = Electron_pt.size();
     RVec<int> pass(n, 0);
@@ -135,44 +99,6 @@ std::vector<std::string> elec_2018ID_inputs =
     "Electron_mvaFall17V2Iso_WP80",
     "Electron_mvaFall17V2Iso_WP90",
     "Electron_mvaFall17V2Iso_WPL",
-};
-
-// ============================================================================
-// Muon 2018 Loose Identification
-// ============================================================================
-auto muon_2018LooseID = [](const RVec<float>& Muon_pt,
-                           const RVec<float>& Muon_eta,
-                           const RVec<float>& Muon_dxy,
-                           const RVec<float>& Muon_dz,
-                           const RVec<float>& Muon_sip3d,
-                           const RVec<float>& Muon_miniPFRelIso_all,
-                           const RVec<bool>& Muon_looseId)
-{
-    const auto n = Muon_pt.size();
-    RVec<bool> pass(n, 0);
-    for (size_t i = 0; i < n; ++i)
-    {
-        if (not (Muon_pt[i] > 10.0f)) continue;
-        if (not (std::fabs(Muon_eta[i]) < 2.4f)) continue;
-        if (not (std::fabs(Muon_dxy[i]) < 0.05f)) continue;
-        if (not (std::fabs(Muon_dz[i]) < 0.1f)) continue;
-        if (not (std::fabs(Muon_sip3d[i]) < 8.0f)) continue;
-        if (not (Muon_miniPFRelIso_all[i] < 0.4f)) continue;
-        if (not (Muon_looseId[i])) continue;
-        pass[i] = 1;
-    }
-    return pass;
-};
-
-std::vector<std::string> muon_2018LooseID_inputs =
-{
-    "Muon_pt",
-    "Muon_eta",
-    "Muon_dxy",
-    "Muon_dz",
-    "Muon_sip3d",
-    "Muon_miniPFRelIso_all",
-    "Muon_looseId"
 };
 
 // ============================================================================
@@ -2060,240 +1986,6 @@ namespace RdfUtil
         return df;
     }
 
-    enum class ColType { kInt, kBool, kDouble, kString };
-
-    struct ColSpec
-    {
-        std::string name;   // e.g. "year"
-        ColType type;       // e.g. kInt
-        std::string out;    // e.g. "Sample_year"
-    };
-
-    struct Row
-    {
-        std::string match;  // substring to match against sample id
-        // values are stored as strings and converted on-demand based on ColSpec::type
-        std::unordered_map<std::string, std::string> v;
-    };
-
-    // ------------------------- helpers -------------------------
-    inline std::string Trim(std::string s)
-    {
-        auto ns = [](unsigned char c) { return !std::isspace(c); };
-        s.erase(s.begin(), std::find_if(s.begin(), s.end(), ns));
-        s.erase(std::find_if(s.rbegin(), s.rend(), ns).base(), s.end());
-        return s;
-    }
-
-    inline std::vector<std::string> SplitCSV(const std::string &line)
-    {
-        // Minimal CSV (no quoted commas). This matches typical HEP "CSV".
-        std::vector<std::string> out;
-        std::stringstream ss(line);
-        std::string item;
-        while (std::getline(ss, item, ','))
-            out.push_back(Trim(item));
-        return out;
-    }
-
-    inline ColType ParseType(const std::string &t)
-    {
-        if (t == "int") return ColType::kInt;
-        if (t == "bool") return ColType::kBool;
-        if (t == "double") return ColType::kDouble;
-        if (t == "string") return ColType::kString;
-        throw std::runtime_error("BuildSampleMetaData: unsupported type '" + t + "'. Use int,bool,double,string.");
-    }
-
-    inline std::pair<std::vector<ColSpec>, std::vector<Row>> LoadTypedCSV(const std::string &csvfile)
-    {
-        std::ifstream in(csvfile);
-        if (!in) throw std::runtime_error("BuildSampleMetaData: cannot open " + csvfile);
-
-        std::string line;
-
-        // read header (skip comments/empty lines)
-        while (std::getline(in, line))
-        {
-            line = Trim(line);
-            if (line.empty() || line[0] == '#') continue;
-            break;
-        }
-        if (line.empty()) throw std::runtime_error("BuildSampleMetaData: CSV has no header: " + csvfile);
-
-        auto hdr = SplitCSV(line);
-        if (hdr.size() < 2) throw std::runtime_error("BuildSampleMetaData: header must have at least 'match' plus one column.");
-
-        if (hdr[0] != "match") throw std::runtime_error("BuildSampleMetaData: first header column must be 'match'.");
-
-        std::vector<ColSpec> cols;
-        cols.reserve(hdr.size() - 1);
-
-        for (std::size_t i = 1; i < hdr.size(); ++i)
-        {
-            const auto &token = hdr[i];
-            auto pos = token.find(':');
-            if (pos == std::string::npos) throw std::runtime_error("BuildSampleMetaData: header entry '" + token + "' must be typed like name:int (or :double/:bool/:string).");
-            auto name = token.substr(0, pos);
-            auto type = token.substr(pos + 1);
-            name = Trim(name);
-            type = Trim(type);
-
-            if (name.empty()) throw std::runtime_error("BuildSampleMetaData: empty column name in header token '" + token + "'.");
-
-            ColSpec cs;
-            cs.name = name;
-            cs.type = ParseType(type);
-            cs.out = "Sample_" + name; // collection name fixed to "Sample"
-            cols.push_back(std::move(cs));
-        }
-
-        std::vector<Row> rows;
-
-        while (std::getline(in, line))
-        {
-            line = Trim(line);
-            if (line.empty() || line[0] == '#') continue;
-
-            auto c = SplitCSV(line);
-            if (c.size() != hdr.size())
-            {
-                throw std::runtime_error("BuildSampleMetaData: row has " + std::to_string(c.size()) + " fields, expected " + std::to_string(hdr.size()) + " (line: " + line + ")");
-            }
-
-            Row r;
-            r.match = c[0];
-
-            for (std::size_t i = 0; i < cols.size(); ++i)
-            {
-                r.v[cols[i].name] = c[i + 1];
-            }
-            rows.push_back(std::move(r));
-        }
-
-        return {cols, rows};
-    }
-
-    inline const Row &MatchRow(const ROOT::RDF::RSampleInfo &si, const std::vector<Row> &rows)
-    {
-        const Row *hit = nullptr;
-        for (const auto &r : rows)
-        {
-            if (si.Contains(r.match))
-            {
-                if (hit)
-                {
-                    throw std::runtime_error("BuildSampleMetaData: ambiguous match for sample '" + si.AsString() + "': matches both '" + hit->match + "' and '" + r.match + "'.");
-                }
-                hit = &r;
-            }
-        }
-        if (!hit)
-        {
-            throw std::runtime_error("BuildSampleMetaData: no match for sample '" + si.AsString() + "'. Add a CSV row whose 'match' substring appears in the file path.");
-        }
-        return *hit;
-    }
-
-    // ------------------------- main API -------------------------
-    //
-    // Returns ROOT::RDF::RNode intentionally (not templated return type) because
-    // we are creating a variable number of columns with variable types.
-    //
-    template <typename RDF> inline ROOT::RDF::RNode BuildSampleMetaData(RDF df, const std::string &csvfile)
-    {
-        auto parsed = LoadTypedCSV(csvfile);
-        auto cols = std::make_shared<std::vector<ColSpec>>(std::move(parsed.first));
-        auto rows = std::make_shared<std::vector<Row>>(std::move(parsed.second));
-
-        ROOT::RDF::RNode node = df;
-
-        // --- define all Sample_* columns dynamically ---
-        for (const auto &col : *cols)
-        {
-            if (col.type == ColType::kInt || col.type == ColType::kBool)
-            {
-                const std::string name = col.name;
-                const std::string out = col.out;
-                node = node.DefinePerSample(out,
-                                            [rows, name](unsigned int, const ROOT::RDF::RSampleInfo &si) -> int
-                                            {
-                                                const auto &r = MatchRow(si, *rows);
-                                                return std::stoi(r.v.at(name));
-                                            });
-            }
-            else if (col.type == ColType::kDouble)
-            {
-                const std::string name = col.name;
-                const std::string out = col.out;
-                node = node.DefinePerSample(out,
-                                            [rows, name](unsigned int, const ROOT::RDF::RSampleInfo &si) -> double
-                                            {
-                                                const auto &r = MatchRow(si, *rows);
-                                                return std::stod(r.v.at(name));
-                                            });
-            }
-            else
-            { // string
-                const std::string name = col.name;
-                const std::string out = col.out;
-                node = node.DefinePerSample(out,
-                                            [rows, name](unsigned int, const ROOT::RDF::RSampleInfo &si) -> std::string
-                                            {
-                                                const auto &r = MatchRow(si, *rows);
-                                                return r.v.at(name);
-                                            });
-            }
-        }
-
-        // --- print once per file what was actually bound ---
-        node = node.DefinePerSample("___PrintSampleMeta",
-                                    [cols, rows](unsigned int, const ROOT::RDF::RSampleInfo &si)
-                                    {
-                                        const auto &r = MatchRow(si, *rows);
-
-                                        std::cout << "\n=== Sample metadata bound ===\n";
-                                        std::cout << "File: " << si.AsString() << "\n";
-
-                                        for (const auto &c : *cols)
-                                        {
-                                            std::cout << "  Sample_" << c.name << " = " << r.v.at(c.name) << "\n";
-                                        }
-
-                                        std::cout << "=============================\n";
-                                        return 0;
-                                    });
-
-        return node;
-    }
-
-
-    inline void PrintSampleMetaDataRegistry(const std::string &csvfile)
-    {
-        auto parsed = LoadTypedCSV(csvfile);
-        const auto &cols = parsed.first;
-        const auto &rows = parsed.second;
-
-        std::cout << "\n===== Parsed CSV header =====\n";
-        std::cout << "match";
-        for (const auto &c : cols)
-            std::cout << ", " << c.name;
-        std::cout << "\n============================\n";
-
-        std::cout << "\n===== Parsed rows =====\n";
-        for (const auto &r : rows)
-        {
-            std::cout << "match=" << r.match;
-            for (const auto &c : cols)
-            {
-                auto it = r.v.find(c.name);
-                std::cout << "  " << c.name << "=" << (it == r.v.end() ? "<missing>" : it->second);
-            }
-            std::cout << "\n";
-        }
-        std::cout << "=======================\n\n";
-    }
-
     inline bool IsDataFromFirstFile(const std::string &filename, const std::string &treename = "Events")
     {
         TFile f(filename.c_str(), "READ");
@@ -2305,6 +1997,54 @@ namespace RdfUtil
         // MC has GenPart branches; data does not
         return (t->GetBranch("GenPart_pt") == nullptr);
     }
+
+
+    // void PrintSampleMetaData(RNode rdf)
+    // {
+    //     auto optDataset = rdf.GetDataset();
+    //     if (!optDataset) {
+    //         std::cout << "\n[PrintSampleMetaData] This RDataFrame was NOT created via FromSpec().\n";
+    //         return;
+    //     }
+
+    //     const auto &dataset = *optDataset;
+
+    //     std::cout << "\n======================================================\n";
+    //     std::cout << "  RDataFrame FromSpec() Dataset Metadata Dump\n";
+    //     std::cout << "======================================================\n";
+
+    //     const auto &samples = dataset.GetSamples();
+    //     std::cout << "Number of samples: " << samples.size() << "\n\n";
+
+    //     for (const auto &sample : samples) {
+
+    //         std::cout << "------------------------------------------------------\n";
+    //         std::cout << " Sample: " << sample.GetSampleName() << "\n";
+    //         std::cout << "------------------------------------------------------\n";
+
+    //         /* Sample metadata dictionary */
+    //         std::cout << "  User Metadata:\n";
+    //         for (const auto &kv : sample.GetMetaData()) {
+    //             std::cout << "    " << kv.first << " = " << kv.second << "\n";
+    //         }
+
+    //         std::cout << "\n  Files parsed by RDF:\n";
+
+    //         int fcount = 0;
+    //         for (const auto &file : sample.GetFiles()) {
+    //             ++fcount;
+    //             std::cout << "    [" << fcount << "] " << file.GetPath() << "\n";
+    //             std::cout << "         Tree:        " << file.GetTreeName() << "\n";
+    //             std::cout << "         Entry Range: " 
+    //                 << file.GetFirstEntry() << "  →  " << file.GetLastEntry() << "\n";
+    //             std::cout << "         File Index:  " << file.GetFileIndex() << "\n";
+    //         }
+
+    //         std::cout << "\n";
+    //     }
+
+    //     std::cout << "======================================================\n\n";
+    // }
 
 } // namespace RdfUtil
 
