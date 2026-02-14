@@ -4,7 +4,7 @@
 FILELIST="files.txt"
 OUTDIR="/blue/phy4905/share/p.chang/ntuples"
 EXECUTABLE="./create_fourlepton_ntuple"
-FILES_PER_JOB=1
+FILES_PER_JOB=4
 CPUS_PER_TASK=4
 MEM="8gb"
 TIME="04:00:00"
@@ -46,7 +46,7 @@ sbatch <<EOF
 #!/bin/bash
 #SBATCH --job-name=4lep
 #SBATCH --account=avery
-#SBATCH --qos=avery
+#SBATCH --qos=avery-b
 #SBATCH --array=1-${NJOBS}
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=${CPUS_PER_TASK}
