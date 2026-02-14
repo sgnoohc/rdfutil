@@ -4,15 +4,18 @@ int main(int argc, char** argv)
 {
     if (argc < 3)
     {
-        std::cerr << "Usage: " << argv[0] << " <input.root> <output.root>" << std::endl;
+        std::cerr << "Usage: " << argv[0] << " <input.root> <output.root> [nthreads]" << std::endl;
         return 1;
     }
 
     std::string input_file_name = argv[1];
     std::string output_file_name = argv[2];
+    int nthreads = (argc >= 4) ? std::atoi(argv[3]) : 4;
 
-    ROOT::EnableImplicitMT(32);
-    // ROOT::DisableImplicitMT(); // or just don't EnableImplicitMT()
+    if (nthreads > 1)
+        ROOT::EnableImplicitMT(nthreads);
+    else
+        ROOT::DisableImplicitMT();
 
     const bool isDataJob = true;
 

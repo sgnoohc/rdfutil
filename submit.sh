@@ -1,18 +1,30 @@
 #!/bin/bash
 
+# ---- Configurable parameters ----
 FILELIST="files.txt"
 OUTDIR="/blue/phy4905/share/p.chang/ntuples"
 EXECUTABLE="./create_fourlepton_ntuple"
+FILES_PER_JOB=1
+CPUS_PER_TASK=4
+MEM="8gb"
+TIME="04:00:00"
+# ----------------------------------
 
-# Count number of files
-NFILES=$(grep -cv '^\s*#\|^\s*$' "$FILELIST")
+# Build per-job file lists
+grep -v '^\s*#\|^\s*$' "$FILELIST" > /tmp/_rdfutil_clean_filelist.txt
+TOTAL_FILES=$(wc -l < /tmp/_rdfutil_clean_filelist.txt)
 
-if [ "$NFILES" -eq 0 ]; then
+if [ "$TOTAL_FILES" -eq 0 ]; then
     echo "No files found in $FILELIST"
     exit 1
 fi
 
-echo "Submitting $NFILES jobs from $FILELIST"
+NJOBS=$(( (TOTAL_FILES + FILES_PER_JOB - 1) / FILES_PER_JOB ))
+
+echo "Total files: $TOTAL_FILES"
+echo "Files per job: $FILES_PER_JOB"
+echo "CPUs per task: $CPUS_PER_TASK"
+echo "Number of jobs: $NJOBS"
 
 mkdir -p "$OUTDIR"
 mkdir -p logs
@@ -22,36 +34,41 @@ sbatch <<EOF
 #SBATCH --job-name=4lep
 #SBATCH --account=avery
 #SBATCH --qos=avery
-#SBATCH --array=1-${NFILES}
+#SBATCH --array=1-${NJOBS}
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=8gb
-#SBATCH --time=04:00:00
+#SBATCH --cpus-per-task=${CPUS_PER_TASK}
+#SBATCH --mem=${MEM}
+#SBATCH --time=${TIME}
 #SBATCH --output=logs/4lep_%A_%a.out
 #SBATCH --error=logs/4lep_%A_%a.err
 
-# Get the file for this array task (skip comments and blank lines)
-INPUT_FILE=\$(grep -v '^\s*#\|^\s*$' "$FILELIST" | sed -n "\${SLURM_ARRAY_TASK_ID}p")
+source setuproot.sh
 
-if [ -z "\$INPUT_FILE" ]; then
-    echo "ERROR: no file at index \${SLURM_ARRAY_TASK_ID}"
+# Slice the file list for this job
+START_LINE=\$(( (SLURM_ARRAY_TASK_ID - 1) * ${FILES_PER_JOB} + 1 ))
+END_LINE=\$(( START_LINE + ${FILES_PER_JOB} - 1 ))
+
+TMPLIST=\$(mktemp /tmp/filelist_\${SLURM_ARRAY_TASK_ID}_XXXXXX.txt)
+sed -n "\${START_LINE},\${END_LINE}p" /tmp/_rdfutil_clean_filelist.txt > "\$TMPLIST"
+
+NLINES=\$(wc -l < "\$TMPLIST")
+if [ "\$NLINES" -eq 0 ]; then
+    echo "ERROR: no files for task \${SLURM_ARRAY_TASK_ID}"
+    rm -f "\$TMPLIST"
     exit 1
 fi
 
 INDEX=\$(printf "%04d" \$SLURM_ARRAY_TASK_ID)
 OUTPUT_FILE="${OUTDIR}/data_Run2_4l_\${INDEX}.root"
 
-echo "Task \${SLURM_ARRAY_TASK_ID}: \$INPUT_FILE -> \$OUTPUT_FILE"
+echo "Task \${SLURM_ARRAY_TASK_ID}: \$NLINES files -> \$OUTPUT_FILE (threads=${CPUS_PER_TASK})"
+cat "\$TMPLIST"
 
-# Write a temporary single-file list for this task
-TMPLIST=\$(mktemp /tmp/filelist_\${SLURM_ARRAY_TASK_ID}_XXXXXX.txt)
-echo "\$INPUT_FILE" > "\$TMPLIST"
-
-${EXECUTABLE} "\$TMPLIST" "\$OUTPUT_FILE"
+${EXECUTABLE} "\$TMPLIST" "\$OUTPUT_FILE" ${CPUS_PER_TASK}
 RETVAL=\$?
 
 rm -f "\$TMPLIST"
 exit \$RETVAL
 EOF
 
-echo "Submitted array job with $NFILES tasks"
+echo "Submitted array job with $NJOBS tasks"
