@@ -27,6 +27,18 @@ echo "Files per job: $FILES_PER_JOB"
 echo "CPUs per task: $CPUS_PER_TASK"
 echo "Number of jobs: $NJOBS"
 
+# Copy grid proxy to shared filesystem so compute nodes can use it
+PROXY_SRC="/tmp/x509up_u$(id -u)"
+PROXY_DST="$(pwd)/.x509up_proxy"
+if [ -f "$PROXY_SRC" ]; then
+    cp "$PROXY_SRC" "$PROXY_DST"
+    chmod 600 "$PROXY_DST"
+    echo "Grid proxy copied to $PROXY_DST"
+else
+    echo "WARNING: no grid proxy found at $PROXY_SRC — xrootd access will fail"
+    echo "         Run: voms-proxy-init --voms cms"
+fi
+
 mkdir -p "$OUTDIR"
 mkdir -p logs
 
@@ -44,12 +56,13 @@ sbatch <<EOF
 #SBATCH --error=logs/4lep_%A_%a.err
 
 source setuproot.sh
+export X509_USER_PROXY=${PROXY_DST}
 
 # Slice the file list for this job
 START_LINE=\$(( (SLURM_ARRAY_TASK_ID - 1) * ${FILES_PER_JOB} + 1 ))
 END_LINE=\$(( START_LINE + ${FILES_PER_JOB} - 1 ))
 
-TMPLIST=\$(mktemp /tmp/filelist_\${SLURM_ARRAY_TASK_ID}_XXXXXX.txt)
+TMPLIST="${CLEAN_FILELIST%.txt}_\${SLURM_ARRAY_TASK_ID}.txt"
 sed -n "\${START_LINE},\${END_LINE}p" ${CLEAN_FILELIST} > "\$TMPLIST"
 
 NLINES=\$(wc -l < "\$TMPLIST")
