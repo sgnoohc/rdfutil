@@ -10,9 +10,10 @@ MEM="8gb"
 TIME="04:00:00"
 # ----------------------------------
 
-# Build per-job file lists
-grep -v '^\s*#\|^\s*$' "$FILELIST" > /tmp/_rdfutil_clean_filelist.txt
-TOTAL_FILES=$(wc -l < /tmp/_rdfutil_clean_filelist.txt)
+# Build clean file list in the working directory (not /tmp, which differs per node)
+CLEAN_FILELIST="$(pwd)/.filelist_clean.txt"
+grep -v '^\s*#\|^\s*$' "$FILELIST" > "$CLEAN_FILELIST"
+TOTAL_FILES=$(wc -l < "$CLEAN_FILELIST")
 
 if [ "$TOTAL_FILES" -eq 0 ]; then
     echo "No files found in $FILELIST"
@@ -49,7 +50,7 @@ START_LINE=\$(( (SLURM_ARRAY_TASK_ID - 1) * ${FILES_PER_JOB} + 1 ))
 END_LINE=\$(( START_LINE + ${FILES_PER_JOB} - 1 ))
 
 TMPLIST=\$(mktemp /tmp/filelist_\${SLURM_ARRAY_TASK_ID}_XXXXXX.txt)
-sed -n "\${START_LINE},\${END_LINE}p" /tmp/_rdfutil_clean_filelist.txt > "\$TMPLIST"
+sed -n "\${START_LINE},\${END_LINE}p" ${CLEAN_FILELIST} > "\$TMPLIST"
 
 NLINES=\$(wc -l < "\$TMPLIST")
 if [ "\$NLINES" -eq 0 ]; then
