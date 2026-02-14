@@ -1987,6 +1987,536 @@ namespace RdfUtil
         return df;
     }
 
+    // ============================================================================
+    // Trigger Configuration
+    // ============================================================================
+    //
+    // TriggerMap: year -> [{PD, [triggers]}] in priority order (highest first).
+    //
+    //   Priority order matters for data: lower-priority PDs veto triggers from
+    //   all higher-priority PDs to avoid double-counting across primary datasets.
+    //
+    //   For MC, pass pd = "MC" and all triggers for the year are OR'd.
+    //
+    // Usage patterns:
+    //
+    //   1) Single year + single PD (simplest, one job per dataset):
+    //
+    //        df = DefineTrigger(df, DileptonTriggers, "2018", "DoubleMuon");
+    //        df = DefineTrigger(df, DileptonTriggers, "2018", "MC");
+    //
+    //   2) Single year + mixed PDs (one job processes all PDs for a year):
+    //
+    //        df = DefineTriggerPerSample(df, DileptonTriggers, "2018",
+    //                 [](const ROOT::RDF::RSampleInfo& s) -> std::string {
+    //                     if (s.Contains("DoubleMuon")) return "DoubleMuon";
+    //                     if (s.Contains("EGamma"))     return "EGamma";
+    //                     if (s.Contains("MuonEG"))     return "MuonEG";
+    //                     return "MC";
+    //                 });
+    //
+    //   3) Custom trigger sets: define your own TriggerMap and pass it in.
+    //
+    //        TriggerMap mySingleLepTriggers = { ... };
+    //        df = DefineTrigger(df, mySingleLepTriggers, "2018", "MC");
+    //
+    // ============================================================================
+
+    using TriggerMap = std::map<std::string,
+                                std::vector<std::pair<std::string, std::vector<std::string>>>>;
+
+    inline const TriggerMap DileptonTriggers =
+    {
+        {"2016", {
+            {"DoubleMuon", {
+                "Mu17_TrkIsoVVL_Mu8_TrkIsoVVL_DZ",
+                "Mu17_TrkIsoVVL_Mu8_TrkIsoVVL",
+                "Mu17_TrkIsoVVL_TkMu8_TrkIsoVVL",
+                "Mu17_TrkIsoVVL_TkMu8_TrkIsoVVL_DZ",
+            }},
+            {"DoubleEG", {
+                "Ele23_Ele12_CaloIdL_TrackIdL_IsoVL_DZ",
+            }},
+            {"MuonEG", {
+                "Mu8_TrkIsoVVL_Ele23_CaloIdL_TrackIdL_IsoVL",
+                "Mu8_TrkIsoVVL_Ele23_CaloIdL_TrackIdL_IsoVL_DZ",
+                "Mu23_TrkIsoVVL_Ele8_CaloIdL_TrackIdL_IsoVL",
+                "Mu23_TrkIsoVVL_Ele8_CaloIdL_TrackIdL_IsoVL_DZ",
+            }},
+        }},
+        {"2017", {
+            {"DoubleMuon", {
+                "Mu17_TrkIsoVVL_Mu8_TrkIsoVVL_DZ_Mass8",
+            }},
+            {"DoubleEG", {
+                "Ele23_Ele12_CaloIdL_TrackIdL_IsoVL",
+            }},
+            {"MuonEG", {
+                "Mu23_TrkIsoVVL_Ele12_CaloIdL_TrackIdL_IsoVL_DZ",
+                "Mu8_TrkIsoVVL_Ele23_CaloIdL_TrackIdL_IsoVL_DZ",
+            }},
+        }},
+        {"2018", {
+            {"DoubleMuon", {
+                "Mu17_TrkIsoVVL_Mu8_TrkIsoVVL_DZ_Mass3p8",
+            }},
+            {"EGamma", {
+                "Ele23_Ele12_CaloIdL_TrackIdL_IsoVL",
+            }},
+            {"MuonEG", {
+                "Mu23_TrkIsoVVL_Ele12_CaloIdL_TrackIdL_IsoVL_DZ",
+                "Mu8_TrkIsoVVL_Ele23_CaloIdL_TrackIdL_IsoVL_DZ",
+            }},
+        }},
+        {"2022", {
+            {"DoubleMuon", {
+                "Mu17_TrkIsoVVL_Mu8_TrkIsoVVL_DZ_Mass3p8",
+            }},
+            {"Muon", {
+                "Mu17_TrkIsoVVL_Mu8_TrkIsoVVL_DZ_Mass3p8",
+            }},
+            {"EGamma", {
+                "Ele23_Ele12_CaloIdL_TrackIdL_IsoVL_DZ",
+            }},
+            {"MuonEG", {
+                "Mu23_TrkIsoVVL_Ele12_CaloIdL_TrackIdL_IsoVL_DZ",
+                "Mu8_TrkIsoVVL_Ele23_CaloIdL_TrackIdL_IsoVL_DZ",
+            }},
+        }},
+        {"2023", {
+            {"Muon", {
+                "Mu17_TrkIsoVVL_Mu8_TrkIsoVVL_DZ_Mass3p8",
+            }},
+            {"EGamma", {
+                "Ele23_Ele12_CaloIdL_TrackIdL_IsoVL_DZ",
+            }},
+            {"MuonEG", {
+                "Mu23_TrkIsoVVL_Ele12_CaloIdL_TrackIdL_IsoVL_DZ",
+                "Mu8_TrkIsoVVL_Ele23_CaloIdL_TrackIdL_IsoVL_DZ",
+            }},
+        }},
+    };
+
+    // ============================================================================
+    // BuildTriggerExpression (internal helper)
+    //
+    // For a given year and PD, build the trigger string expression with the
+    // correct pass/veto logic.  Uses ColumnExists to skip missing HLT branches.
+    //
+    // Returns the expression string (e.g. "(HLT_A || HLT_B) && !(HLT_C)").
+    // ============================================================================
+    static std::string BuildTriggerExpression(RNode df,
+                                              const TriggerMap& triggers,
+                                              const std::string& year,
+                                              const std::string& pd)
+    {
+        auto it = triggers.find(year);
+        if (it == triggers.end())
+            throw std::runtime_error("BuildTriggerExpression: unknown year '" + year + "'");
+
+        const auto& yearEntries = it->second;
+        const bool isMC = (pd == "MC");
+
+        std::vector<std::string> passCols;
+        std::vector<std::string> vetoCols;
+
+        bool foundPD = false;
+
+        for (const auto& entry : yearEntries)
+        {
+            const std::string& pdName = entry.first;
+            const std::vector<std::string>& trigs = entry.second;
+
+            if (isMC)
+            {
+                for (const auto& t : trigs)
+                {
+                    std::string col = "HLT_" + t;
+                    if (ColumnExists(df, col))
+                        passCols.push_back(col);
+                }
+            }
+            else
+            {
+                if (pdName == pd)
+                {
+                    foundPD = true;
+                    for (const auto& t : trigs)
+                    {
+                        std::string col = "HLT_" + t;
+                        if (ColumnExists(df, col))
+                            passCols.push_back(col);
+                    }
+                }
+                else if (!foundPD)
+                {
+                    for (const auto& t : trigs)
+                    {
+                        std::string col = "HLT_" + t;
+                        if (ColumnExists(df, col))
+                            vetoCols.push_back(col);
+                    }
+                }
+            }
+        }
+
+        if (!isMC && !foundPD)
+            throw std::runtime_error("BuildTriggerExpression: PD '" + pd
+                                     + "' not found for year '" + year + "'");
+
+        // Deduplicate
+        auto dedup = [](std::vector<std::string>& v) {
+            std::sort(v.begin(), v.end());
+            v.erase(std::unique(v.begin(), v.end()), v.end());
+        };
+        dedup(passCols);
+        dedup(vetoCols);
+
+        // Build expression
+        std::string expr;
+
+        if (passCols.empty())
+        {
+            expr = "false";
+        }
+        else
+        {
+            expr = "(";
+            for (size_t i = 0; i < passCols.size(); ++i)
+            {
+                if (i > 0) expr += " || ";
+                expr += passCols[i];
+            }
+            expr += ")";
+        }
+
+        if (!vetoCols.empty())
+        {
+            expr += " && !(";
+            for (size_t i = 0; i < vetoCols.size(); ++i)
+            {
+                if (i > 0) expr += " || ";
+                expr += vetoCols[i];
+            }
+            expr += ")";
+        }
+
+        return expr;
+    }
+
+    // ============================================================================
+    // DefineTrigger
+    //
+    // Defines a bool column encoding the trigger decision for a single year + PD.
+    //
+    //   triggers   A TriggerMap (e.g. DileptonTriggers)
+    //   year       "2016", "2017", "2018", "2022", "2023"
+    //   pd         Primary dataset name ("DoubleMuon", "EGamma", ...) or "MC"
+    //   outCol     Output column name (default "passTrig")
+    //
+    // Data:  OR triggers for the requested PD, veto higher-priority PD triggers.
+    // MC:    OR all triggers for the year regardless of PD.
+    // Missing HLT branches are silently skipped.
+    // ============================================================================
+    static RNode DefineTrigger(RNode df,
+                               const TriggerMap& triggers,
+                               const std::string& year,
+                               const std::string& pd,
+                               const std::string& outCol = "passTrig")
+    {
+        std::string expr = BuildTriggerExpression(df, triggers, year, pd);
+
+        std::cout << "[DefineTrigger] year=" << year
+                  << "  pd=" << pd
+                  << "  expr=" << expr << std::endl;
+
+        return df.Define(outCol, expr);
+    }
+
+    // ============================================================================
+    // DefineTriggerPerSample
+    //
+    // Defines a per-event trigger decision when a single RDataFrame chain
+    // contains files from multiple primary datasets within one year.
+    //
+    // The pdExtractor callback inspects each sample (via RSampleInfo) and
+    // returns the PD name ("DoubleMuon", "EGamma", "MC", ...).
+    //
+    // Internally:
+    //   1) For each PD in the year (plus "MC"), pre-builds the trigger expression
+    //      with the correct pass/veto logic.
+    //   2) Uses DefinePerSample to assign a per-sample PD index.
+    //   3) Defines a single output column using a nested ternary that selects
+    //      the correct trigger expression based on the PD index.
+    //
+    // All files in the chain must be from the same year (same NanoAOD campaign)
+    // so that HLT branches are consistent.  For multi-year processing, run one
+    // year at a time.
+    //
+    // Example:
+    //   df = DefineTriggerPerSample(df, DileptonTriggers, "2018",
+    //            [](const ROOT::RDF::RSampleInfo& s) -> std::string {
+    //                if (s.Contains("DoubleMuon")) return "DoubleMuon";
+    //                if (s.Contains("EGamma"))     return "EGamma";
+    //                if (s.Contains("MuonEG"))     return "MuonEG";
+    //                return "MC";
+    //            });
+    //
+    // ============================================================================
+    using PDExtractor = std::function<std::string(const ROOT::RDF::RSampleInfo&)>;
+
+    static RNode DefineTriggerPerSample(
+        RNode df,
+        const TriggerMap& triggers,
+        const std::string& year,
+        PDExtractor pdExtractor,
+        const std::string& outCol = "passTrig")
+    {
+        auto it = triggers.find(year);
+        if (it == triggers.end())
+            throw std::runtime_error("DefineTriggerPerSample: unknown year '" + year + "'");
+
+        const auto& yearEntries = it->second;
+
+        // Build per-PD expressions (index 0 = MC, then each PD in priority order)
+        std::vector<std::string> pdNames;
+        std::vector<std::string> pdExprs;
+
+        // MC: OR all triggers
+        {
+            std::string mcExpr = BuildTriggerExpression(df, triggers, year, "MC");
+            pdNames.push_back("MC");
+            pdExprs.push_back(mcExpr);
+        }
+
+        // Each PD with its veto logic
+        for (const auto& entry : yearEntries)
+        {
+            const std::string& pdName = entry.first;
+            std::string pdExpr = BuildTriggerExpression(df, triggers, year, pdName);
+            pdNames.push_back(pdName);
+            pdExprs.push_back(pdExpr);
+        }
+
+        // Map PD name -> index
+        std::map<std::string, int> pdToIdx;
+        for (int i = 0; i < (int)pdNames.size(); ++i)
+            pdToIdx[pdNames[i]] = i;
+
+        // DefinePerSample: assign each sample its PD index
+        const std::string idxCol = "__trigPdIdx_" + outCol;
+
+        df = df.DefinePerSample(
+            idxCol,
+            [pdExtractor, pdToIdx, year](unsigned int, const ROOT::RDF::RSampleInfo& info) -> int
+            {
+                std::string pd = pdExtractor(info);
+                auto jt = pdToIdx.find(pd);
+                if (jt != pdToIdx.end()) return jt->second;
+                throw std::runtime_error(
+                    "DefineTriggerPerSample: pdExtractor returned '" + pd
+                    + "' which is not in the trigger map for year '" + year + "'");
+            });
+
+        // Build nested ternary: idxCol==0 ? (expr0) : (idxCol==1 ? (expr1) : ... : false)
+        std::string condExpr = "false";
+        for (int i = (int)pdExprs.size() - 1; i >= 0; --i)
+        {
+            condExpr = "(" + idxCol + " == " + std::to_string(i)
+                     + " ? (" + pdExprs[i] + ") : (" + condExpr + "))";
+        }
+
+        std::cout << "[DefineTriggerPerSample] year=" << year << std::endl;
+        for (size_t i = 0; i < pdNames.size(); ++i)
+            std::cout << "  idx=" << i << "  pd=" << pdNames[i]
+                      << "  expr=" << pdExprs[i] << std::endl;
+
+        return df.Define(outCol, condExpr);
+    }
+
+    // ============================================================================
+    // SampleExtractor
+    //
+    // Callback that returns {year, pd} for a given sample.
+    // "pd" should match a key in the TriggerMap (e.g. "DoubleMuon"), or "MC".
+    // ============================================================================
+    using SampleExtractor = std::function<
+        std::pair<std::string, std::string>(const ROOT::RDF::RSampleInfo&)>;
+
+    // ============================================================================
+    // DefaultSampleExtractor
+    //
+    // Pattern-matches the file path / sample name to determine year and PD.
+    //
+    // Year patterns (checked in order):
+    //   "Run2023" | "Summer23"                      -> "2023"
+    //   "Run2022" | "Summer22" | "EE2022"           -> "2022"
+    //   "Run2018" | "UL18" | "Summer20" | "Autumn18"-> "2018"
+    //   "Run2017" | "UL17" | "Fall17"               -> "2017"
+    //   "Run2016" | "UL16" | "Summer16"             -> "2016"
+    //
+    // PD patterns (checked most-specific first):
+    //   "/DoubleMuon/"  "/DoubleEG/"  "/MuonEG/"
+    //   "/EGamma/"  "/SingleMuon/"  "/SingleElectron/"  "/Muon/"
+    //   "/JetHT/"  "/JetMET/"  "/MET/"
+    //   Otherwise -> "MC"
+    //
+    // Override with your own SampleExtractor if your paths don't match.
+    // ============================================================================
+    static SampleExtractor DefaultSampleExtractor()
+    {
+        return [](const ROOT::RDF::RSampleInfo& info) -> std::pair<std::string, std::string>
+        {
+            const std::string s = info.AsString();
+            const auto npos = std::string::npos;
+
+            // ---- year ----
+            std::string year;
+            if      (s.find("Run2023") != npos || s.find("Summer23") != npos)
+                year = "2023";
+            else if (s.find("Run2022") != npos || s.find("Summer22") != npos || s.find("EE2022") != npos)
+                year = "2022";
+            else if (s.find("Run2018") != npos || s.find("UL18") != npos
+                     || s.find("Summer20") != npos || s.find("Autumn18") != npos)
+                year = "2018";
+            else if (s.find("Run2017") != npos || s.find("UL17") != npos || s.find("Fall17") != npos)
+                year = "2017";
+            else if (s.find("Run2016") != npos || s.find("UL16") != npos || s.find("Summer16") != npos)
+                year = "2016";
+            else
+                throw std::runtime_error(
+                    "DefaultSampleExtractor: cannot determine year from '" + s + "'");
+
+            // ---- primary dataset (most specific first) ----
+            std::string pd = "MC";
+            if      (s.find("/DoubleMuon/")      != npos) pd = "DoubleMuon";
+            else if (s.find("/DoubleEG/")         != npos) pd = "DoubleEG";
+            else if (s.find("/MuonEG/")           != npos) pd = "MuonEG";
+            else if (s.find("/EGamma/")           != npos) pd = "EGamma";
+            else if (s.find("/SingleMuon/")       != npos) pd = "SingleMuon";
+            else if (s.find("/SingleElectron/")   != npos) pd = "SingleElectron";
+            else if (s.find("/Muon/")             != npos) pd = "Muon";
+            else if (s.find("/JetHT/")            != npos) pd = "JetHT";
+            else if (s.find("/JetMET/")           != npos) pd = "JetMET";
+            else if (s.find("/MET/")              != npos) pd = "MET";
+            // no match -> stays "MC"
+
+            return {year, pd};
+        };
+    }
+
+    // ============================================================================
+    // DefineTriggers
+    //
+    // The all-in-one entry point.  Applies one or more named trigger
+    // configurations, auto-detecting year and PD per sample.
+    //
+    // Each entry in triggerSets is {outputColumnName, TriggerMap}.
+    //
+    //   df = DefineTriggers(df, {
+    //       {"Trig_passDilepton", DileptonTriggers},
+    //       {"Trig_passHT",      HTTriggers},
+    //   });
+    //
+    //   // or with a custom extractor:
+    //   df = DefineTriggers(df, {
+    //       {"Trig_passDilepton", DileptonTriggers},
+    //   }, myExtractor);
+    //
+    // For each trigger set the function:
+    //   1) Enumerates every (year, PD) combo in the TriggerMap (plus "MC" per year).
+    //   2) Pre-builds the pass/veto expression for each combo.
+    //   3) Uses DefinePerSample to map each file to its combo index.
+    //   4) Emits a nested ternary selecting the right expression per event.
+    //
+    // If a (year, PD) combo returned by the extractor is not in the TriggerMap
+    // for a particular trigger set, it falls back to the "MC" entry for that
+    // year (OR of all triggers).
+    // ============================================================================
+    static RNode DefineTriggers(
+        RNode df,
+        const std::vector<std::pair<std::string, TriggerMap>>& triggerSets,
+        SampleExtractor extractor = DefaultSampleExtractor())
+    {
+        for (const auto& trigSet : triggerSets)
+        {
+            const std::string& outCol  = trigSet.first;
+            const TriggerMap&  trigMap  = trigSet.second;
+
+            // ---- enumerate all (year, PD) combos ----
+            struct Combo { std::string year; std::string pd; std::string expr; };
+            std::vector<Combo> combos;
+            std::map<std::pair<std::string,std::string>, int> comboToIdx;
+
+            for (const auto& yearEntry : trigMap)
+            {
+                const std::string& year    = yearEntry.first;
+                const auto& pdEntries      = yearEntry.second;
+
+                // MC combo for this year
+                {
+                    std::string expr = BuildTriggerExpression(df, trigMap, year, "MC");
+                    comboToIdx[{year, "MC"}] = (int)combos.size();
+                    combos.push_back({year, "MC", expr});
+                }
+
+                // Each PD combo for this year
+                for (const auto& pdEntry : pdEntries)
+                {
+                    const std::string& pdName = pdEntry.first;
+                    std::string expr = BuildTriggerExpression(df, trigMap, year, pdName);
+                    comboToIdx[{year, pdName}] = (int)combos.size();
+                    combos.push_back({year, pdName, expr});
+                }
+            }
+
+            // ---- DefinePerSample: map each file to its combo index ----
+            const std::string idxCol = "__trigIdx_" + outCol;
+
+            df = df.DefinePerSample(
+                idxCol,
+                [extractor, comboToIdx](unsigned int,
+                                        const ROOT::RDF::RSampleInfo& info) -> int
+                {
+                    auto yearPd = extractor(info);
+                    const std::string& year = yearPd.first;
+                    const std::string& pd   = yearPd.second;
+
+                    // Exact match
+                    auto jt = comboToIdx.find({year, pd});
+                    if (jt != comboToIdx.end()) return jt->second;
+
+                    // Fallback: use MC entry for this year
+                    auto jt2 = comboToIdx.find({year, "MC"});
+                    if (jt2 != comboToIdx.end()) return jt2->second;
+
+                    throw std::runtime_error(
+                        "DefineTriggers[" + std::string(info.AsString())
+                        + "]: no trigger config for year='" + year
+                        + "' pd='" + pd + "'");
+                });
+
+            // ---- build nested ternary ----
+            std::string condExpr = "false";
+            for (int i = (int)combos.size() - 1; i >= 0; --i)
+            {
+                condExpr = "(" + idxCol + " == " + std::to_string(i)
+                         + " ? (" + combos[i].expr + ") : (" + condExpr + "))";
+            }
+
+            std::cout << "[DefineTriggers] " << outCol << std::endl;
+            for (size_t i = 0; i < combos.size(); ++i)
+                std::cout << "  idx=" << i
+                          << "  year=" << combos[i].year
+                          << "  pd=" << combos[i].pd
+                          << "  expr=" << combos[i].expr << std::endl;
+
+            df = df.Define(outCol, condExpr);
+        }
+
+        return df;
+    }
+
     inline bool IsDataFromFirstFile(const std::string &filename, const std::string &treename = "Events")
     {
         TFile f(filename.c_str(), "READ");

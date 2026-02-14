@@ -63,11 +63,15 @@ int main(int argc, char** argv)
     df = RdfUtil::MergeCollections(df, "GoodMuon", "GoodElectron", "GoodLepton");
     df = RdfUtil::TrimCollectionByDeltaR(df, "PreORGoodJet", "GoodLepton", "GoodJet", Jet_properties, 0.4f);
 
+    // Trigger
+    df = RdfUtil::DefineTriggers(df, {
+        {"Trig_passDilepton", RdfUtil::DileptonTriggers},
+    });
+
     df = df.Filter("nGoodLepton==4", "N_{lep}=4");
-    // df = df.Filter("HLT_Mu17_TrkIsoVVL_Mu8_TrkIsoVVL_DZ_Mass3p8==1", "HLT_DoubleMuon");
 
     // Output
-    auto cols_to_write = RdfUtil::SelectColumnNames(df, {"GoodLepton*", "nGoodLepton", "GoodJet*", "nGoodJet", "MET*", "genWeight", "run", "lumi*", "event", "HLT_Mu17*"});
+    auto cols_to_write = RdfUtil::SelectColumnNames(df, {"GoodLepton*", "nGoodLepton", "GoodJet*", "nGoodJet", "MET*", "Trig_*", "genWeight", "run", "lumi*", "event"});
     df.Snapshot("Events", output_file_name, cols_to_write);
 
     return 0;
