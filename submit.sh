@@ -1,5 +1,12 @@
 #!/bin/bash
 
+if [ -z "$1" ]; then
+    echo "Usage: $0 <jobname>"
+    exit 1
+fi
+
+JOBNAME="$1"
+
 # ---- Configurable parameters ----
 FILELIST="files.txt"
 OUTDIR="/blue/phy4905/share/p.chang/ntuples"
@@ -40,11 +47,11 @@ else
 fi
 
 mkdir -p "$OUTDIR"
-mkdir -p logs
+mkdir -p "logs/${JOBNAME}"
 
 sbatch <<EOF
 #!/bin/bash
-#SBATCH --job-name=4lep
+#SBATCH --job-name=${JOBNAME}
 #SBATCH --account=avery
 #SBATCH --qos=avery-b
 #SBATCH --array=1-${NJOBS}
@@ -52,8 +59,8 @@ sbatch <<EOF
 #SBATCH --cpus-per-task=${CPUS_PER_TASK}
 #SBATCH --mem=${MEM}
 #SBATCH --time=${TIME}
-#SBATCH --output=logs/4lep_%A_%a.out
-#SBATCH --error=logs/4lep_%A_%a.err
+#SBATCH --output=logs/${JOBNAME}/%A_%a.out
+#SBATCH --error=logs/${JOBNAME}/%A_%a.err
 
 source setuproot.sh
 export X509_USER_PROXY=${PROXY_DST}
